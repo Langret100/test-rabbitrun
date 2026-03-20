@@ -324,10 +324,15 @@ chatIn.addEventListener("keydown", (e)=>{
 let playerName = "토끼";
 let seekerView = false; // 디버그/테스트용: 술래 시점이면 바닥 열쇠가 안 보이게
 let rabbitFollowMode = false;
+let rabbitCommandMode = 'scatter';
 let rabbitFollowIssuedAt = 0;
+let lastRabbitReplyText = '';
+let recentRabbitReplyLines = [];
 let hardMode = false;
 const NORMAL_SUPPORT_RABBIT_COUNT = 3;
 const HARD_SUPPORT_RABBIT_COUNT = 1;
+const TORAI_STEAL_CHANCE = 0.10;
+const TORAI_NAME = '토라이';
 
 function getSupportRabbitTargetCount(){
   return hardMode ? HARD_SUPPORT_RABBIT_COUNT : NORMAL_SUPPORT_RABBIT_COUNT;
@@ -352,77 +357,214 @@ function toggleHardMode(){
   updateHardModeUi();
 }
 
+function normalizeRabbitCommandText(text){
+  return ((text||'')+'').toLowerCase().replace(/\s+/g,'').replace(/[!！.,?？~～]/g,'');
+}
 function isFollowCommand(text){
-  const t=(text||'').trim();
-  return /(따라와|따라와라|따라오라|따라오라고|따라오렴|따라와줘|따라오세요|follow me)/i.test(t);
+  const t = normalizeRabbitCommandText(text);
+  return /^(따라와|나따라와|나를따라와|따라와줘|따라와라|따라오라|따라오라고|따라오렴|따라오세요|followme)$/.test(t)
+    || /(따라와|따라오)/.test(t);
 }
 function isScatterCommand(text){
-  const t=(text||'').trim();
-  return /(흩어져|흩어지|퍼져|각자 가|따로 돌아다녀|따로 다녀|scatter)/i.test(t);
+  const t = normalizeRabbitCommandText(text);
+  return /^(흩어져|퍼져|각자가|각자돌아다녀|따로다녀|따로돌아다녀|scatter)$/.test(t)
+    || /(흩어져|퍼져|각자|따로다녀|따로돌아다녀)/.test(t);
+}
+function pickLeadSupportRabbit(){
+  const rabbits = getSupportRabbitList().filter(r => r && r.userData && !r.userData.trapped);
+  if(!rabbits.length) return null;
+  const p = getPlayerRefSafe() || player;
+  rabbits.sort((a,b)=>Math.hypot(a.position.x-p.position.x, a.position.z-p.position.z)-Math.hypot(b.position.x-p.position.x, b.position.z-p.position.z));
+  return rabbits[0] || null;
+}
+function postRabbitCommandChat(mode){
+  if(mode==='follow'){
+    addChat('[토끼들] 알겠어, 함께 갈게!');
+    return true;
+  }
+  if(mode==='scatter'){
+    addChat('[토끼들] 알겠어, 다시 흩어져서 살펴볼게!');
+    return true;
+  }
+  return false;
+}
+function applyRabbitCommand(mode){
+  const nextMode = (mode==='follow') ? 'follow' : 'scatter';
+  postRabbitCommandChat(nextMode);
+  setSupportRabbitCommandMode(nextMode);
+  return true;
 }
 function setSupportRabbitCommandMode(mode){
+  rabbitCommandMode = (mode==='follow') ? 'follow' : 'scatter';
   rabbitFollowMode = (mode==='follow');
   rabbitFollowIssuedAt = performance.now();
   try{ ensureSupportRabbits(); }catch(e){}
-  for(let i=0;i<supportRabbits.length;i++){
-    const r = supportRabbits[i];
+  const rabbits = getSupportRabbitList();
+  const p = getPlayerRefSafe() || player;
+  let leadRabbit = null;
+  let freeCount = 0;
+  for(let i=0;i<rabbits.length;i++){
+    const r = rabbits[i];
     if(!r || !r.userData || r.userData.trapped) continue;
+    freeCount++;
     const ru = r.userData;
+    ru.followSlot = freeCount - 1;
+    ru.helpAggroUntil = 0;
+    ru.waitT = 0;
+    ru.stuckT = 0;
+    ru.forceFollowUntil = 0;
     if(mode==='follow'){
+      if(!leadRabbit) leadRabbit = r;
+      ru.commandMode = 'follow';
       ru.mode = 'follow';
-      ru.followSlot = i;
       ru.followUntil = rabbitFollowIssuedAt + 600000;
       ru.scatterX = null; ru.scatterZ = null;
-      ru.helpAggroUntil = 0;
-      supportRabbitSay(r, i===0 ? '좋아, 간격 맞춰서 따라갈게!' : '서로 안 겹치게 뒤따라갈게!');
+      ru.patrolX = r.position.x; ru.patrolZ = r.position.z;
+      ru.followDistBias = (ru.followDistBias!=null) ? ru.followDistBias : (Math.random()*0.7);
+      ru.followSideBias = (ru.followSideBias!=null) ? ru.followSideBias : (-0.18 + Math.random()*0.36);
+      ru.followAnchorX = r.position.x;
+      ru.followAnchorZ = r.position.z;
+      ru.followLeadInUntil = rabbitFollowIssuedAt + 350;
+      ru.forceFollowUntil = rabbitFollowIssuedAt + 15000;
     }else{
-      ru.mode = ru.hasKey ? 'deliver' : (keyCount>=1 ? 'escort' : 'wander');
+      ru.commandMode = 'scatter';
       ru.followUntil = 0;
+      ru.followLeadInUntil = 0;
+      ru.forceFollowUntil = 0;
+      ru.mode = ru.hasKey ? 'deliver' : (getPlayerKeyCountSafe()>=1 ? 'escort' : 'wander');
       const ang = (-0.9 + i*0.9);
       const dist = 8.0 + i*1.4;
-      ru.scatterX = player.position.x + Math.cos(ang)*dist;
-      ru.scatterZ = player.position.z + Math.sin(ang)*dist;
-      ru.waitT = 0.12;
-      supportRabbitSay(r, i===0 ? '좋아, 다시 흩어져서 볼게!' : '알겠어, 각자 둘러볼게!');
+      ru.scatterX = p.position.x + Math.cos(ang)*dist;
+      ru.scatterZ = p.position.z + Math.sin(ang)*dist;
+      ru.patrolX = ru.scatterX; ru.patrolZ = ru.scatterZ;
     }
   }
+  if(!leadRabbit) leadRabbit = pickLeadSupportRabbit();
+  return { mode: rabbitCommandMode, leadRabbit, activeCount: rabbits.filter(r => r && r.userData && !r.userData.trapped).length };
+}
+
+
+function getPlayerKeyCountSafe(){
+  if(typeof window.keyCount === 'number') return window.keyCount;
+  try{ if(typeof keyCount === 'number') return keyCount; }catch(e){}
+  return 0;
+}
+function getPlayerRefSafe(){
+  if(window.player) return window.player;
+  try{ if(player) return player; }catch(e){}
+  return null;
+}
+function getLooseKeysSafe(){
+  if(Array.isArray(window.keys)) return window.keys;
+  try{ if(Array.isArray(keys)) return keys; }catch(e){}
+  return [];
+}
+function getSupportRabbitList(){
+  const rabbits = (typeof supportRabbits !== 'undefined' && Array.isArray(supportRabbits)) ? supportRabbits : (window.__supportRabbits || []);
+  window.__supportRabbits = rabbits;
+  return rabbits;
+}
+function getUntrappedSupportRabbits(){
+  return getSupportRabbitList().filter(r => r && r.userData && !r.userData.trapped);
+}
+
+function applyRabbitSeparationTarget(r, tx, tz, minDist=0.7, maxDist=2.2){
+  let pushX = 0, pushZ = 0;
+  let tooCloseCount = 0;
+  const softBand = Math.max(0.10, minDist * 0.22);
+  for(const other of getSupportRabbitList()){
+    if(!other || other===r || !other.userData || other.userData.trapped) continue;
+    const dx = r.position.x - other.position.x;
+    const dz = r.position.z - other.position.z;
+    const dd = Math.hypot(dx, dz) || 0.0001;
+    if(dd >= minDist) continue;
+    const over = (minDist - dd);
+    if(over <= 0) continue;
+    const force = Math.min(1, over / Math.max(softBand, 0.08));
+    pushX += (dx / dd) * force;
+    pushZ += (dz / dd) * force;
+    tooCloseCount++;
+  }
+  if(tooCloseCount > 0){
+    const len = Math.hypot(pushX, pushZ) || 1;
+    const clamp = Math.min(1, len);
+    const blend = Math.min(0.08, 0.035 + tooCloseCount * 0.012);
+    tx += (pushX / len) * clamp * blend;
+    tz += (pushZ / len) * clamp * blend;
+  }
+  return { x: tx, z: tz, minDist, maxDist };
+}
+
+function getToraiRabbit(){
+  return getSupportRabbitList().find(r => r && r.userData && r.userData.nick===TORAI_NAME && !r.userData.trapped) || null;
+}
+function ensureLooseKeyExists(){
+  const anyRabbitHasKey = getSupportRabbitList().some(r => r && r.userData && r.userData.hasKey);
+  if(getPlayerKeyCountSafe()<=0 && !anyRabbitHasKey){
+    const looseKeys = getLooseKeysSafe();
+    if(looseKeys.length===0){
+      try{ placeKey(); }catch(e){}
+    }else if(looseKeys.length>1){
+      for(let i=looseKeys.length-1;i>0;i--){
+        try{ scene.remove(looseKeys[i]); }catch(e){}
+        looseKeys.splice(i,1);
+      }
+    }
+  }
+}
+function triggerToraiKeyRun(torai, nowMs){
+  if(!torai || !torai.userData) return false;
+  const ru = torai.userData;
+  ru.mode = 'toraiRun';
+  ru.commandMode = 'scatter';
+  ru.hasKey = true;
+  ru.specialRunUntil = nowMs + 4200;
+  ru.mustReturnKeyUntil = nowMs + 5000;
+  ru.nextTransferAt = nowMs + 700;
+  ru.deliverDelayUntil = 0;
+  ru.forceKeyHelpUntil = 0;
+  ru.keyMarkUntil = nowMs + 12000;
+  const viewAway = 12 + Math.random()*6;
+  const playerRef = getPlayerRefSafe();
+  const ang = ((playerRef && playerRef.rotation ? playerRef.rotation.y : 0)||0) + Math.PI + (-0.7 + Math.random()*1.4);
+  ru.scatterX = ((playerRef && playerRef.position) ? playerRef.position.x : 0) + Math.sin(ang) * viewAway;
+  ru.scatterZ = ((playerRef && playerRef.position) ? playerRef.position.z : 0) + Math.cos(ang) * viewAway;
+  supportRabbitSay(torai, Math.random()<0.5 ? '내가 해결해볼거야!' : '내가 도전하겠어!');
+  addChat('[토라이] 열쇠를 받아서 괴물을 유인하러 뛰어갔습니다!');
+  return true;
 }
 
 function sendChat(){
   const v = chatIn.value.trim();
   if(!v) return false;
   addChat("나: "+v);
-  let replied = false;
   let commandHandled = false;
-  try{
-    if(typeof ensureSupportRabbits === "function") ensureSupportRabbits();
-  }catch(e){ console.warn("ensure support rabbits failed", e); }
+  try{ if(typeof ensureSupportRabbits === "function") ensureSupportRabbits(); }catch(e){ console.warn("ensure support rabbits failed", e); }
   try{
     if(isFollowCommand(v)){
-      setSupportRabbitCommandMode('follow');
-      addChat('[토끼들] 간격을 두고 따라옵니다.');
-      commandHandled = true;
+      commandHandled = !!applyRabbitCommand('follow');
     }else if(isScatterCommand(v)){
-      setSupportRabbitCommandMode('scatter');
-      addChat('[토끼들] 다시 흩어져 주변을 살핍니다.');
-      commandHandled = true;
+      commandHandled = !!applyRabbitCommand('scatter');
     }
   }catch(e){ console.warn('rabbit command handling failed', e); }
-  try{ replied = !!rabbitRespondToPlayerChat(v); }catch(e){ console.warn("rabbit chat reply failed", e); }
-  if(!replied){
-    try{ replied = !!forceImmediateRabbitReplies(v); }catch(e){ console.warn("rabbit immediate reply failed", e); }
-  }
-  if(!replied){
-    try{
-      const fallbackLine = (typeof makeRabbitReplyFromText === "function")
-        ? makeRabbitReplyFromText(v)
-        : "응응, 듣고 있어!";
-      addChat("토순이: "+fallbackLine);
-      replied = true;
-    }catch(e){ console.warn("rabbit fallback reply failed", e); }
-  }
-  if(commandHandled && !replied){
-    try{ forceImmediateRabbitReplies(v); }catch(e){}
+  if(!commandHandled){
+    let replied = false;
+    try{ replied = !!rabbitRespondToPlayerChat(v); }catch(e){ console.warn("rabbit chat reply failed", e); }
+    if(!replied){
+      try{ replied = !!forceImmediateRabbitReplies(v); }catch(e){ console.warn("rabbit immediate reply failed", e); }
+    }
+    if(!replied){
+      try{
+        const fallbackLine = (typeof chooseRabbitReplyLine === "function")
+          ? chooseRabbitReplyLine(v, null)
+          : ((typeof makeRabbitReplyFromText === "function")
+              ? makeRabbitReplyFromText(v)
+              : pickLineDifferent(["응응, 듣고 있어!","알겠어!","좋아, 계속 말해봐!","오케이, 기억해둘게!"], lastRabbitReplyText));
+        const rabbit = pickLeadSupportRabbit() || getSupportRabbitList().find(r => r && r.userData && !r.userData.trapped) || null;
+        if(rabbit) supportRabbitSay(rabbit, fallbackLine, {force:true});
+        else addChat("토끼: "+fallbackLine);
+      }catch(e){ console.warn("rabbit fallback reply failed", e); }
+    }
   }
   chatIn.value="";
   return true;
@@ -475,6 +617,15 @@ function updateChatH(){
 addEventListener("resize", updateChatH);
 addEventListener("orientationchange", updateChatH);
 setTimeout(updateChatH, 0);
+addEventListener('pointerdown', (e)=>{
+  const t = e.target;
+  if(!t) return;
+  if(chatIn.contains && chatIn.contains(t)) return;
+  if($('chatWrap').contains && $('chatWrap').contains(t)) return;
+  if(document.activeElement===chatIn && !chatMode){
+    try{ chatIn.blur(); }catch(_e){}
+  }
+}, true);
 
 function start2D(){
   fallback.style.display="none";
@@ -1211,6 +1362,7 @@ function makeRabbit(){
     return g;
   }
   const player = makeRabbit();
+  window.player = player;
   // Start near the central cage
   player.position.set(0, 0, cage.userData.D/2 + 2.2);
   scene.add(player);
@@ -1218,9 +1370,12 @@ function makeRabbit(){
 
   // Progress state (defined early to avoid TDZ)
   let keyCount = 0;
+  window.keyCount = keyCount;
   let doorProg = 0;
   let rabbitCaughtCount = 0;
+  let rabbitCaughtResetAt = 0;
   let rabbitGhost = false;
+  let toraiStealArmed = false;
 
 
   // Key indicator above rabbit head (visible when holding a key)
@@ -1234,6 +1389,16 @@ function makeRabbit(){
     const ki = player.getObjectByName("keyIndicator");
     if(!ki) return;
     ki.visible = (keyCount>=1);
+  }
+  function syncPlayerKeyUI(){
+    $("pKey").textContent = "🔑 "+keyCount;
+    updateKeyIndicator();
+  }
+  function setPlayerKeyCount(nextCount, awarenessTime){
+    keyCount = Math.max(0, nextCount|0);
+    window.keyCount = keyCount;
+    if(awarenessTime!=null) lastPlayerKeyAwarenessAt = awarenessTime;
+    syncPlayerKeyUI();
   }
 
   function makeCaughtCloud(){
@@ -1256,6 +1421,17 @@ function makeRabbit(){
   function updateCaughtCloud(){
     const cc = player.getObjectByName("caughtCloud");
     if(cc) cc.visible = (!rabbitGhost && rabbitCaughtCount===1);
+  }
+  function markRabbitCaught(nowMs){
+    rabbitCaughtCount++;
+    rabbitCaughtResetAt = (rabbitCaughtCount===1) ? (nowMs + 60000) : 0;
+    updateCaughtCloud();
+  }
+  function clearRabbitCaughtPenalty(chatLine){
+    rabbitCaughtCount = 0;
+    rabbitCaughtResetAt = 0;
+    updateCaughtCloud();
+    if(chatLine) addChat(chatLine);
   }
   function animateCaughtCloud(dt){
     const cc = player.getObjectByName("caughtCloud");
@@ -1331,8 +1507,8 @@ const countdownEl = $("countdown");
     const overlay = document.createElement('div');
     overlay.id = 'gameOverOverlay';
     overlay.style.cssText = 'position:fixed;inset:0;z-index:140;display:flex;align-items:center;justify-content:center;background:rgba(5,8,14,.82);backdrop-filter:blur(4px)';
-    const title = isClear ? 'Clear' : '게임 오버';
-    const sub = isClear ? '축하합니다!' : msg;
+    const title = isClear ? (hardMode ? '하드모드 클리어' : 'Clear') : '게임 오버';
+    const sub = isClear ? (hardMode ? '하드모드 클리어!' : '축하합니다!') : msg;
     const timeHtml = isClear ? '<div style="font-size:18px;font-weight:800;opacity:.96;margin-top:4px;margin-bottom:16px">걸린 시간: ' + formatDuration(elapsedSec) + '</div>' : '<div style="font-size:16px;opacity:.92;margin-bottom:16px">'+msg+'</div>';
     overlay.innerHTML = '<div style="min-width:280px;max-width:86vw;background:rgba(10,14,24,.96);border:1px solid rgba(255,255,255,.12);border-radius:18px;padding:22px 18px;box-shadow:0 18px 50px rgba(0,0,0,.42);text-align:center;color:#eef3ff"><div style="font-size:28px;font-weight:900;margin-bottom:8px">'+title+'</div><div style="font-size:16px;opacity:.92;'+(isClear?'margin-bottom:8px':'margin-bottom:16px')+'">'+sub+'</div>'+timeHtml+'<button id="restartGameBtn" style="border:0;border-radius:14px;padding:12px 20px;font-weight:800;background:linear-gradient(180deg,#7ea6ff,#5b79ff);color:#fff;cursor:pointer">다시시작</button></div>';
     document.body.appendChild(overlay);
@@ -2011,7 +2187,8 @@ const balls = [];
   let monster = null; // first monster only, kept for compatibility in a few places
   let monsters = [];
   let monsterAI = true; // default ON for solo speed test
-  let supportRabbits = [];
+  let supportRabbits = window.__supportRabbits || [];
+  window.__supportRabbits = supportRabbits;
   const sectorDefs = [
     {name:'NW', minX:-(GW*CELL)*0.5+6, maxX:-6, minZ:-(GH*CELL)*0.5+6, maxZ:-6},
     {name:'NE', minX:6, maxX:(GW*CELL)*0.5-6, minZ:-(GH*CELL)*0.5+6, maxZ:-6},
@@ -2117,30 +2294,64 @@ const balls = [];
     if(stroke) ctx.stroke();
   }
 
-  function makeSpeechSprite(text, bg='rgba(18,24,38,0.86)', fg='#f5f8ff'){
-    const cvs=document.createElement('canvas'); cvs.width=320; cvs.height=96;
-    const ctx=cvs.getContext('2d');
-    ctx.clearRect(0,0,cvs.width,cvs.height);
-    ctx.fillStyle=bg; roundRect(ctx,10,10,cvs.width-20,cvs.height-20,22,true,false);
-    ctx.strokeStyle='rgba(160,220,255,0.55)'; ctx.lineWidth=3; roundRect(ctx,10,10,cvs.width-20,cvs.height-20,22,false,true);
-    ctx.fillStyle=fg; ctx.font='bold 24px system-ui, sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-    const txt=(text||'').slice(0,34);
-    ctx.fillText(txt, cvs.width/2, cvs.height/2);
-    const tex=new THREE.CanvasTexture(cvs); tex.needsUpdate=true;
-    const spr=new THREE.Sprite(new THREE.SpriteMaterial({map:tex, transparent:true, depthWrite:false}));
-    spr.scale.set(2.9,0.88,1); spr.userData={canvas:cvs, ctx, tex};
-    return spr;
+  function wrapSpeechLines(ctx, text, maxWidth){
+    const src = ((text||'')+'').trim();
+    if(!src) return [''];
+    const rough = src.split(/\n+/).flatMap(part => part.split(/(?<=[!?.?！？])\s*/));
+    const lines = [];
+    for(const partRaw of rough){
+      const part = (partRaw||'').trim();
+      if(!part) continue;
+      let line = '';
+      const tokens = part.includes(' ') ? part.split(/\s+/) : Array.from(part);
+      for(const tk of tokens){
+        const next = line ? (part.includes(' ') ? line + ' ' + tk : line + tk) : tk;
+        if(ctx.measureText(next).width <= maxWidth || !line){
+          line = next;
+        }else{
+          lines.push(line);
+          line = tk;
+        }
+      }
+      if(line) lines.push(line);
+    }
+    return lines.slice(0, 3);
   }
-  function setSpeechSpriteText(spr, text, bg='rgba(18,24,38,0.86)', fg='#f5f8ff'){
+  function drawSpeechSpriteText(spr, text, bg='rgba(18,24,38,0.86)', fg='#f5f8ff'){
     if(!spr || !spr.userData || !spr.userData.ctx) return;
     const {canvas:cvs, ctx, tex}=spr.userData;
     ctx.clearRect(0,0,cvs.width,cvs.height);
-    ctx.fillStyle=bg; roundRect(ctx,10,10,cvs.width-20,cvs.height-20,22,true,false);
-    ctx.strokeStyle='rgba(160,220,255,0.55)'; ctx.lineWidth=3; roundRect(ctx,10,10,cvs.width-20,cvs.height-20,22,false,true);
-    ctx.fillStyle=fg; ctx.font='bold 24px system-ui, sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-    const txt=(text||'').slice(0,34);
-    ctx.fillText(txt, cvs.width/2, cvs.height/2);
+    const padX = 26, padY = 18;
+    let fontSize = 24;
+    ctx.font = 'bold '+fontSize+'px system-ui, sans-serif';
+    let lines = wrapSpeechLines(ctx, text, cvs.width - padX*2);
+    while(lines.some(line => ctx.measureText(line).width > cvs.width - padX*2) && fontSize > 18){
+      fontSize -= 2;
+      ctx.font = 'bold '+fontSize+'px system-ui, sans-serif';
+      lines = wrapSpeechLines(ctx, text, cvs.width - padX*2);
+    }
+    const lineH = Math.round(fontSize * 1.25);
+    const boxH = Math.max(76, padY*2 + lineH * lines.length);
+    ctx.fillStyle=bg; roundRect(ctx,10,10,cvs.width-20,boxH,22,true,false);
+    ctx.strokeStyle='rgba(160,220,255,0.55)'; ctx.lineWidth=3; roundRect(ctx,10,10,cvs.width-20,boxH,22,false,true);
+    ctx.fillStyle=fg; ctx.font='bold '+fontSize+'px system-ui, sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    const centerY = 10 + boxH/2;
+    const startY = centerY - ((lines.length-1)*lineH)/2;
+    lines.forEach((line, idx)=> ctx.fillText(line, cvs.width/2, startY + idx*lineH));
+    spr.scale.set(3.35, Math.max(0.95, 0.82 + lines.length*0.24), 1);
     tex.needsUpdate=true;
+  }
+  function makeSpeechSprite(text, bg='rgba(18,24,38,0.86)', fg='#f5f8ff'){
+    const cvs=document.createElement('canvas'); cvs.width=448; cvs.height=160;
+    const ctx=cvs.getContext('2d');
+    const tex=new THREE.CanvasTexture(cvs); tex.needsUpdate=true;
+    const spr=new THREE.Sprite(new THREE.SpriteMaterial({map:tex, transparent:true, depthWrite:false}));
+    spr.userData={canvas:cvs, ctx, tex};
+    drawSpeechSpriteText(spr, text, bg, fg);
+    return spr;
+  }
+  function setSpeechSpriteText(spr, text, bg='rgba(18,24,38,0.86)', fg='#f5f8ff'){
+    drawSpeechSpriteText(spr, text, bg, fg);
   }
   const supportRabbitNamePool = ["토순이", "토돌이", "토라이", "토복이", "토미", "토몽이", "토랑이", "토하니", "토비", "토리", "토초롱", "토하루", "토콩이", "토달이", "토루", "토마루", "토핑이", "토구름", "토보리", "토모카", "토샤", "토파니", "토새미"];
   function shuffledSupportRabbitNames(){
@@ -2160,7 +2371,7 @@ const balls = [];
     handoff: ["이 열쇠 받아!", "여기 열쇠야!", "내가 찾았어, 받아!", "열쇠 챙겨!"],
     keyFound: ["열쇠 찾았다!", "좋아, 열쇠를 찾았어!", "열쇠 발견! 지금 가져갈게!", "지도에 열쇠 위치를 띄울게!"],
     lure: ["이쪽이야, 따라와!", "내가 미끼가 될게!", "여기 봐!", "내가 도와줄게! 이쪽으로 와!"],
-    advice: ["괴물과 눈이 마주치면 안돼!", "괴물에게 쫓기면 책장으로 유도해서 쓰러뜨려!", "E를 눌러서 빠르게 이동할 수 있어!", "갈림길에선 바로 꺾어서 시야를 끊어!", "열쇠를 가진 토끼를 따라오면 돼!", "열쇠는 한 번에 1개만 생성된대!", "당근을 먹어! 그러면 바로 빠르게 움직일 수 있어!", "태블릿을 찾아! 문제를 풀면 열쇠 위치를 알려주고 잠시 무적이 돼!"],
+    advice: ["괴물과 눈이 마주치면 안돼!", "괴물에게 쫓기면 책장으로 유도해서 쓰러뜨려!", "E를 눌러서 빠르게 이동할 수 있어!", "갈림길에선 바로 꺾어서 시야를 끊어!", "열쇠를 가진 토끼를 따라오면 돼!", "채팅에 따라와라고 치면, 안 갇힌 토끼들이 서로 간격을 두고 널 따라가!", "채팅에 흩어져라고 치면, 따라오던 토끼들이 다시 각자 주변을 살펴봐!", "열쇠는 한 번에 1개만 생성된대!", "당근을 먹어! 그러면 바로 빠르게 움직일 수 있어!", "태블릿을 찾아! 문제를 풀면 열쇠 위치를 알려주고 잠시 무적이 돼!", "채팅에 따라와 라고 치면 안 갇힌 토끼들이 너를 따라가!", "채팅에 흩어져 라고 치면 토끼들이 다시 각자 흩어져 살펴봐!"],
     status: ["내가 열쇠를 들고 있어!", "지금 내가 열쇠를 가지고 가는 중이야!", "곧 가져다줄게!"],
     aggro: ["내가 도와줄게!", "이쪽으로 와! 내가 끌어볼게!", "내가 괴물을 유인할게!"],
     wander: ["여긴 조용하네...", "조심해서 가자.", "복도 끝을 살펴볼게.", "이 근처도 확인해보자!", "당근 자판기라도 있으면 좋겠다.", "왜 백룸엔 바닥 청소기가 없지?", "나 지금 귀가 레이더처럼 쫑긋해졌어!", "잠깐, 내 꼬리 봤어? 아 여기 있네.", "무서운데 배는 또 고프다..."],
@@ -2169,12 +2380,16 @@ const balls = [];
       "철창 밖이 너무 부러워...", "누가 자물쇠 좀 봐줘!", "발은 멀쩡한데 문이 문제야!", "여기 너무 답답해!",
       "열쇠 가진 토끼 있으면 와줘!", "문제 풀고 있는데 떨려!", "나 아직 구조 기다리는 중이야!", "철창이 너무 단단해!",
       "도와줘, 나 못 나가겠어!", "나 여기 있어! 안 보이니?", "누가 열쇠 좀 던져줘... 아니 직접 와줘!", "밖에서 보면 더 무서울까?",
-      "여기 갇히니까 괜히 더 춥다!", "빨리 나가서 다시 뛰고 싶어!"
+      "여기 갇히니까 괜히 더 춥다!", "빨리 나가서 다시 뛰고 싶어!", "구해줘!", "도와줘..", "날 꺼내주면 도와줄게!"
     ],
   };
   function pickLine(arr){ return arr[(Math.random()*arr.length)|0]; }
+  function pickLineDifferent(arr, avoid){
+    const pool = (arr||[]).filter(x=>x && x!==avoid);
+    return pickLine(pool.length ? pool : (arr||[]));
+  }
   const rabbitChatReact = {
-    ack: ["응응, 듣고 있어!", "알겠어!", "오케이, 기억해둘게!", "좋아, 같이 해보자!", "응, 그럴 수도 있지!", "좋아좋아!"],
+    ack: ["응응, 듣고 있어!", "알겠어!", "오케이, 기억해둘게!", "좋아, 같이 해보자!", "응, 그럴 수도 있지!", "좋아좋아!", "그래, 계속 말해봐!", "응, 잘 듣고 있어!", "좋아, 이해했어!", "오, 그 말 기억할게!", "응응, 무슨 뜻인지 알겠어!", "좋아, 같이 맞춰보자!", "오케이, 귀 쫑긋 세웠어!", "그래, 이어서 말해줘!", "응, 지금 집중해서 듣는 중이야!", "좋아, 그 말 참고할게!", "알았어, 같이 해보자고!", "응, 그 얘기 괜찮다!", "좋아, 내가 옆에서 듣고 있을게!", "오, 그 말 꽤 중요해 보여!", "응응, 놓치지 않고 듣고 있어!", "그래, 계속 말해도 돼!"],
     curious: ["오, 그건 좀 궁금한데?", "진짜? 나도 살짝 궁금해졌어!", "흠, 그 얘기 좀 더 들어보고 싶다!", "그 말 왠지 의미심장한데?"],
     playful: ["내 귀가 방금 쫑긋했어!", "방금 복도가 대답한 줄 알았어!", "그 말 들으니까 당근 생각난다!", "오, 갑자기 분위기 비밀작전!", "이 백룸보다 너 말이 더 신비한데?"],
     agree: ["맞아 맞아!", "나도 그렇게 생각해!", "그거 좋은 생각이야!", "오, 그 방향 괜찮다!"],
@@ -2196,62 +2411,50 @@ const balls = [];
     return pickLine(rabbitChatReact.ack.concat(rabbitChatReact.playful));
   }
   function pickReplyRabbitPool(){
-    return supportRabbits.filter(r=>r && r.userData && !r.userData.trapped);
+    return getSupportRabbitList().filter(r=>r && r.userData && !r.userData.trapped);
   }
   function chooseRabbitReplyLine(text, rabbit){
     const t=(text||'').trim();
-    const base = makeRabbitReplyFromText(t);
     const pool = rabbitChatReact.ack.concat(rabbitChatReact.playful, rabbitChatReact.curious, rabbitChatReact.agree);
-    let line = base || pickLine(pool);
-    if(rabbit && rabbit.userData && line === (rabbit.userData.lastLine||'')){
-      const alt = pool.filter(x=>x !== rabbit.userData.lastLine);
-      if(alt.length) line = pickLine(alt);
+    let line = makeRabbitReplyFromText(t) || pickLine(pool);
+    const banned = new Set(recentRabbitReplyLines.slice(-3));
+    if(rabbit && rabbit.userData && rabbit.userData.lastLine) banned.add(rabbit.userData.lastLine);
+    if(lastRabbitReplyText) banned.add(lastRabbitReplyText);
+    if(banned.has(line)){
+      const candidates = pool.filter(v => !banned.has(v));
+      if(candidates.length) line = pickLine(candidates);
+      else line = pickLineDifferent(pool, rabbit && rabbit.userData ? rabbit.userData.lastLine : lastRabbitReplyText);
     }
+    lastRabbitReplyText = line;
+    recentRabbitReplyLines.push(line);
+    if(recentRabbitReplyLines.length > 8) recentRabbitReplyLines = recentRabbitReplyLines.slice(-8);
     return line;
   }
   function rabbitRespondToPlayerChat(text){
     const pool = pickReplyRabbitPool();
     if(!pool.length) return false;
-    const shuffled = pool.slice().sort(()=>Math.random()-0.5);
-    const count = shuffled.length >= 2 && Math.random() < 0.68 ? 2 : 1;
-    const chosen = shuffled.slice(0, count);
+    const byDist = pool.slice().sort((a,b)=>{
+      const pa = Math.hypot(a.position.x-player.position.x, a.position.z-player.position.z);
+      const pb = Math.hypot(b.position.x-player.position.x, b.position.z-player.position.z);
+      return pa-pb;
+    });
+    const chosen = byDist.slice(0, Math.min(byDist.length, byDist.length >= 3 ? 3 : byDist.length >= 2 ? 2 : 1));
     let said = false;
     chosen.forEach((r, idx)=>{
-      const line = chooseRabbitReplyLine(text, r);
-      said = supportRabbitSay(r, line, {force:true}) || said;
-      if(idx===0 && count===2 && Math.random() < 0.30){
-        const other = chosen[1];
-        const pair = pickLine(rabbitChatReact.pairA);
-        if(pair && pair[0] && pair[1]){
-          said = supportRabbitSay(r, pair[0], {force:true}) || said;
-          said = supportRabbitSay(other, pair[1], {force:true}) || said;
+      let line = chooseRabbitReplyLine(text, r);
+      if(idx>0){
+        const banned = new Set(chosen.slice(0, idx).map(x => x.userData && x.userData.lastLine).filter(Boolean));
+        if(banned.has(line)){
+          const pool2 = rabbitChatReact.ack.concat(rabbitChatReact.playful, rabbitChatReact.curious, rabbitChatReact.agree).filter(v => !banned.has(v));
+          if(pool2.length) line = pickLine(pool2);
         }
       }
+      said = supportRabbitSay(r, line, {force:true}) || said;
     });
     return said;
   }
   function forceImmediateRabbitReplies(text){
-    const pool = pickReplyRabbitPool();
-    if(!pool.length) return false;
-    const chosen = pool.slice().sort(()=>Math.random()-0.5).slice(0, Math.min(pool.length, Math.random()<0.55 ? 2 : 1));
-    let made = 0;
-    for(const r of chosen){
-      const name = (r.userData && r.userData.nick) ? r.userData.nick : '회색 토끼';
-      const line = chooseRabbitReplyLine(text, r);
-      addChat(name+': '+line);
-      try{
-        r.userData.lastTalkAt = performance.now();
-        r.userData.lastLine = line;
-        r.userData.lastSameLineAt = performance.now();
-        if(r.userData.bubble){
-          setSpeechSpriteText(r.userData.bubble, line);
-          r.userData.bubble.visible = true;
-          r.userData.bubbleUntil = performance.now() + 2400;
-        }
-      }catch(e){}
-      made++;
-    }
-    return made>0;
+    return rabbitRespondToPlayerChat(text);
   }
   function forceRabbitChatRepliesNow(text){
     rabbitRespondToPlayerChat(text);
@@ -2325,7 +2528,7 @@ const balls = [];
     nameTag.position.set(0, 2.45, 0);
     g.add(nameTag);
     const bubble = makeSpeechSprite('');
-    bubble.position.set(0, 3.15, 0);
+    bubble.position.set(0, 3.45, 0);
     bubble.visible = false;
     g.add(bubble);
     const rabbitKeyIcon = makeKey();
@@ -2437,7 +2640,16 @@ const balls = [];
     }
   }
 
-  const keysDown={w:0,s:0,a:0,d:0};
+  const keysDown={w:0,s:0,a:0,d:0,arrowup:0,arrowdown:0,arrowleft:0,arrowright:0};
+  const MOVE_KEYS = new Set(['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright','shift','e']);
+  function normalizeControlKey(evt){
+    const k = String(evt.key||'').toLowerCase();
+    if(k==='up') return 'arrowup';
+    if(k==='down') return 'arrowdown';
+    if(k==='left') return 'arrowleft';
+    if(k==='right') return 'arrowright';
+    return k;
+  }
   const sprint = { charge: 1, active: false, hold: false, drain: 1/3, regen: 1/20, mult: 1.4 };
   const mSprint = { charge: 1, active: false, hold: false, drain: 1/4, regen: 1/14, mult: 1.4 };
   let revealPingT = 0;
@@ -2504,14 +2716,21 @@ const balls = [];
   btnE.addEventListener("contextmenu",(e)=>e.preventDefault());
 
   addEventListener("keydown",(e)=>{
-    if(chatMode || document.activeElement===chatIn || $("mathModal").classList.contains("show")){
-      if(e.key.toLowerCase()!=="escape") return;
+    const k = normalizeControlKey(e);
+    const modalOpen = $("mathModal").classList.contains("show");
+    const typing = (chatMode || document.activeElement===chatIn || modalOpen);
+    if(typing){
+      if(k!=="escape") return;
     }
-    const k=e.key.toLowerCase();
+    if(MOVE_KEYS.has(k)) e.preventDefault();
     if(keysDown[k]!=null) keysDown[k]=1;
     if(k==="e") doInteract();
   });
-  addEventListener("keyup",(e)=>{ const k=e.key.toLowerCase(); if(keysDown[k]!=null) keysDown[k]=0; });
+  addEventListener("keyup",(e)=>{
+    const k = normalizeControlKey(e);
+    if(MOVE_KEYS.has(k)) e.preventDefault();
+    if(keysDown[k]!=null) keysDown[k]=0;
+  });
 
   // mobile joystick
   const joyBase=$("joyBase"), joyKnob=$("joyKnob");
@@ -2606,12 +2825,12 @@ const balls = [];
       if(rabbitGhost){ addChat('유령 상태에서는 열쇠를 들 수 없습니다.'); hidePrompt(); return; }
       scene.remove(k);
       keys.splice(keys.indexOf(k),1);
-      keyCount = 1; lastPlayerKeyAwarenessAt = performance.now(); beep(660,0.06,'sine',0.35); $("pKey").textContent="🔑 "+keyCount; updateKeyIndicator();
+      setPlayerKeyCount(1, performance.now()); toraiStealArmed = (Math.random() < TORAI_STEAL_CHANCE); beep(660,0.06,'sine',0.35);
       addChat("["+playerName+"]가 열쇠를 먹었습니다.");
       for(const r of supportRabbits){
         if(!r.userData.trapped){
           supportRabbitSay(r, Math.random()<0.5 ? '지도의 녹색 점을 쫓아서 문을 열어!' : '초록 점으로 가! 문이 있는 쪽이야!');
-          r.userData.mode = 'escort';
+          if(r.userData.commandMode!=='follow') r.userData.mode = 'escort';
           r.userData.helpAggroUntil = performance.now() + 5000;
         }
       }
@@ -2626,7 +2845,7 @@ const balls = [];
       const hinge = cage.getObjectByName("cageHinge");
       if(cage.userData.locked){
         if(keyCount>=1){
-          keyCount=Math.max(0,keyCount-1); lastPlayerKeyAwarenessAt = performance.now(); $("pKey").textContent="🔑 "+keyCount; updateKeyIndicator();
+          setPlayerKeyCount(keyCount-1, performance.now()); toraiStealArmed = false;
           try{ placeKey(); }catch(e){}
           cage.userData.locked=false;
           if(playerInsideCage()) player.userData.trapped = false;
@@ -2661,7 +2880,7 @@ const balls = [];
       if(unlocked < 3){
         if(rabbitGhost){ addChat('유령 상태에서는 탈출문을 조작할 수 없습니다.'); return; }
         if(keyCount<=0){ addChat("[싱글] 자물쇠를 풀려면 열쇠가 필요하다."); return; }
-        keyCount = 0; lastPlayerKeyAwarenessAt = performance.now(); $("pKey").textContent="🔑 "+keyCount; updateKeyIndicator();
+        setPlayerKeyCount(0, performance.now()); toraiStealArmed = false;
         try{ placeKey(); }catch(e){}
         const idx = Math.min(2, doorState.locksUnlocked);
         const lk = locks[idx];
@@ -2680,8 +2899,8 @@ const balls = [];
         addChat("[싱글] 탈출문이 열린다!");
         beep(740,0.06,'sine',0.25);
       }else{
-        addChat("✅ 탈출 성공!");
-        endGame("축하합니다!", { clear:true });
+        addChat(hardMode ? '✅ 하드모드 탈출 성공!' : '✅ 탈출 성공!');
+        endGame(hardMode ? '하드모드 클리어!' : '축하합니다!', { clear:true });
       }
       return;
     }
@@ -2892,6 +3111,94 @@ function pushOutWalls(px,pz,rad){
     return {x,z};
   }
 
+  function computeNavRepulsion(x,z,rad,margin=0.64){
+    let rx=0, rz=0, hits=0;
+    const safe = rad + margin;
+    for(const b of wallBoxes){
+      if(Math.abs(x-b.cx) > (b.hx + safe + CELL)) continue;
+      if(Math.abs(z-b.cz) > (b.hz + safe + CELL)) continue;
+      const qx = Math.max(b.cx - b.hx, Math.min(x, b.cx + b.hx));
+      const qz = Math.max(b.cz - b.hz, Math.min(z, b.cz + b.hz));
+      let dx = x - qx, dz = z - qz;
+      let dist = Math.hypot(dx,dz);
+      if(dist < 0.0001){
+        dx = x - b.cx; dz = z - b.cz;
+        if(Math.abs(dx) >= Math.abs(dz)) dx = dx || 0.001; else dz = dz || 0.001;
+        dist = Math.hypot(dx,dz);
+      }
+      if(dist < safe){
+        const push = (safe - dist) / safe;
+        rx += (dx/dist) * push;
+        rz += (dz/dist) * push;
+        hits++;
+      }
+    }
+    for(const o of props){
+      if(!o || !o.userData) continue;
+      const kind=o.userData.kind;
+      if(kind==="cart" || kind==="ball") continue;
+      let qx=x, qz=z;
+      if(kind==="pillar"){
+        const rr = (o.userData.halfX||0.6) + safe;
+        let dx = x - o.position.x, dz = z - o.position.z;
+        let dist = Math.hypot(dx,dz);
+        if(dist < rr){
+          if(dist < 0.0001){ dx = 0.001; dist = 0.001; }
+          const push = (rr - dist) / rr;
+          rx += (dx/dist) * push;
+          rz += (dz/dist) * push;
+          hits++;
+        }
+        continue;
+      }
+      const hx=o.userData.halfX||0, hz=o.userData.halfZ||0;
+      qx = Math.max(o.position.x - hx, Math.min(x, o.position.x + hx));
+      qz = Math.max(o.position.z - hz, Math.min(z, o.position.z + hz));
+      let dx = x - qx, dz = z - qz;
+      let dist = Math.hypot(dx,dz);
+      if(dist < 0.0001){
+        dx = x - o.position.x; dz = z - o.position.z;
+        if(Math.abs(dx) >= Math.abs(dz)) dx = dx || 0.001; else dz = dz || 0.001;
+        dist = Math.hypot(dx,dz);
+      }
+      if(dist < safe){
+        const push = (safe - dist) / safe;
+        rx += (dx/dist) * push;
+        rz += (dz/dist) * push;
+        hits++;
+      }
+    }
+    if(hits>0){ rx/=hits; rz/=hits; }
+    return {x:rx, z:rz, hits};
+  }
+
+  function findAgentEscapeMove(agent, rad=0.48, turnBias=1, step=1.05){
+    const repel = computeNavRepulsion(agent.position.x, agent.position.z, rad, rad >= 0.58 ? 0.92 : 0.74);
+    const repelLen = Math.hypot(repel.x, repel.z);
+    const baseAng = repelLen > 0.03
+      ? Math.atan2(repel.x, repel.z)
+      : ((agent.rotation ? agent.rotation.y : 0) + turnBias * 1.1);
+    const angs = [
+      baseAng,
+      baseAng + 0.55*turnBias, baseAng - 0.55*turnBias,
+      baseAng + 1.05*turnBias, baseAng - 1.05*turnBias,
+      baseAng + Math.PI*0.5, baseAng - Math.PI*0.5,
+      baseAng + Math.PI
+    ];
+    let best = {x:agent.position.x, z:agent.position.z, prog:0, ang:baseAng, tx:agent.position.x, tz:agent.position.z};
+    for(const ang of angs){
+      const vx = Math.sin(ang), vz = Math.cos(ang);
+      for(const mul of [1.0, 1.35, 1.7]){
+        const cand = resolveMoveAt(agent.position.x, agent.position.z, agent.position.x + vx*step*mul, agent.position.z + vz*step*mul, rad);
+        const prog = Math.hypot(cand.x-agent.position.x, cand.z-agent.position.z);
+        if(prog > best.prog + 0.001){
+          best = {x:cand.x, z:cand.z, prog, ang, tx:agent.position.x + vx*(step*mul*1.8), tz:agent.position.z + vz*(step*mul*1.8)};
+        }
+      }
+    }
+    return best;
+  }
+
   function agentMoveToward(agent, tx, tz, sp, dt, rad=0.48, turnBias=1){
     const dx = tx - agent.position.x;
     const dz = tz - agent.position.z;
@@ -2899,15 +3206,21 @@ function pushOutWalls(px,pz,rad){
     if(d < 0.001) return { moved:false, x:agent.position.x, z:agent.position.z, prog:0 };
     const step = Math.min(d, sp*dt);
     const dirx = dx / d, dirz = dz / d;
-    const ux = -dirz*turnBias, uz = dirx*turnBias;
+    const repel = computeNavRepulsion(agent.position.x, agent.position.z, rad, rad >= 0.58 ? 0.92 : 0.74);
+    let sdirx = dirx + repel.x * 1.35;
+    let sdirz = dirz + repel.z * 1.35;
+    let sdirLen = Math.hypot(sdirx, sdirz);
+    if(sdirLen < 0.0001){ sdirx = dirx; sdirz = dirz; sdirLen = 1; }
+    sdirx /= sdirLen; sdirz /= sdirLen;
+    const ux = -sdirz*turnBias, uz = sdirx*turnBias;
     const tries = [
-      [dirx, dirz, 1.00], [dirx*0.92 + ux*0.35, dirz*0.92 + uz*0.35, 0.98], [dirx*0.92 - ux*0.35, dirz*0.92 - uz*0.35, 0.98],
+      [sdirx, sdirz, 1.00], [sdirx*0.92 + ux*0.35, sdirz*0.92 + uz*0.35, 0.98], [sdirx*0.92 - ux*0.35, sdirz*0.92 - uz*0.35, 0.98],
       [ux, uz, 0.94], [-ux, -uz, 0.94],
-      [dirx*0.68 + ux*0.78, dirz*0.68 + uz*0.78, 0.90],
-      [dirx*0.68 - ux*0.78, dirz*0.68 - uz*0.78, 0.90],
-      [-dirx*0.35 + ux*0.94, -dirz*0.35 + uz*0.94, 0.72],
-      [-dirx*0.35 - ux*0.94, -dirz*0.35 - uz*0.94, 0.72],
-      [-dirx, -dirz, 0.30],
+      [sdirx*0.68 + ux*0.78, sdirz*0.68 + uz*0.78, 0.90],
+      [sdirx*0.68 - ux*0.78, sdirz*0.68 - uz*0.78, 0.90],
+      [-sdirx*0.35 + ux*0.94, -sdirz*0.35 + uz*0.94, 0.72],
+      [-sdirx*0.35 - ux*0.94, -sdirz*0.35 - uz*0.94, 0.72],
+      [-sdirx, -sdirz, 0.30],
     ];
     let best = {x:agent.position.x, z:agent.position.z, moved:false, prog:0};
     for(const t of tries){
@@ -2917,8 +3230,14 @@ function pushOutWalls(px,pz,rad){
       const prog = Math.hypot(cand.x-agent.position.x, cand.z-agent.position.z);
       if(prog > best.prog + 0.0015) best = {x:cand.x, z:cand.z, moved:prog>0.002, prog};
     }
+    if(repel.hits>0 && best.prog < Math.min(0.085, step*0.72)){
+      const escapeLen = Math.hypot(repel.x, repel.z) || 1;
+      const escape = resolveMoveAt(agent.position.x, agent.position.z, agent.position.x + (repel.x/escapeLen)*step*0.95, agent.position.z + (repel.z/escapeLen)*step*0.95, rad);
+      const eprog = Math.hypot(escape.x-agent.position.x, escape.z-agent.position.z);
+      if(eprog > best.prog + 0.001){ best = {x:escape.x, z:escape.z, moved:eprog>0.002, prog:eprog}; }
+    }
     if(best.prog < Math.min(0.045, step*0.42)){
-      const baseAng = (agent.rotation ? agent.rotation.y : Math.atan2(dirx, dirz)) + turnBias * 0.95;
+      const baseAng = (agent.rotation ? agent.rotation.y : Math.atan2(sdirx, sdirz)) + turnBias * 0.95;
       const alt = [baseAng, baseAng + 0.65*turnBias, baseAng - 0.65*turnBias, baseAng + Math.PI*0.5*turnBias];
       for(const ang of alt){
         const vx = Math.sin(ang), vz = Math.cos(ang);
@@ -3051,7 +3370,11 @@ function pushOutWalls(px,pz,rad){
 
   function updateSupportRabbits(dt){
     const nowMs = performance.now();
+    ensureSupportRabbits();
+    ensureLooseKeyExists();
     for(const r of supportRabbits){
+      if(!r) continue;
+      r.visible = true;
       r.position.y = Math.sin(nowMs/240 + r.position.x*0.05)*0.04;
       const ru = r.userData;
       updateRabbitOverlayVisibility(r);
@@ -3109,21 +3432,30 @@ function pushOutWalls(px,pz,rad){
         supportRabbitSay(r, pickLine(rabbitBark.wander));
       }
 
-      if(!ru.hasKey && playerChased && nowMs > (ru.aggroCooldownUntil||0) && !ru.trapped && pd < 13.5){
+      const playerHasObjectiveKey = keyCount >= 1;
+      const commandFollowing = !!(rabbitCommandMode==='follow' && !ru.trapped && !player.userData.trapped);
+      if(commandFollowing){
+        ru.commandMode = 'follow';
+        if(ru.mode !== 'borrow' && ru.mode !== 'toraiRun') ru.mode = 'follow';
+        ru.followSlot = Math.max(0, getUntrappedSupportRabbits().indexOf(r));
+        ru.followUntil = nowMs + 2500;
+      }
+
+      if(!commandFollowing && !ru.hasKey && playerChased && nowMs > (ru.aggroCooldownUntil||0) && !ru.trapped && pd < 13.5){
         ru.mode = 'aggro';
         ru.helpAggroUntil = nowMs + 5000;
         ru.aggroCooldownUntil = nowMs + 60000;
         if(nowMs - (ru.lastTalkAt||0) > 1200) supportRabbitSay(r, pickLine(rabbitBark.aggro));
       }
 
-      if(keyCount>=1 && !ru.trapped){
+      if(!commandFollowing && keyCount>=1 && !ru.trapped){
         if(pd < 8.0) ru.mode = 'escort';
       }
-      if(seePlayer && pd<7.5 && !ru.hasKey && !isChased && ru.mode!=='aggro' && ru.mode!=='escort'){
+      if(!commandFollowing && seePlayer && pd<7.5 && !ru.hasKey && !isChased && ru.mode!=='aggro' && ru.mode!=='escort'){
         ru.mode = 'lure';
         ru.lureUntil = nowMs + 2500;
       }else if(ru.mode==='lure' && nowMs > (ru.lureUntil||0)){
-        ru.mode = ru.hasKey ? 'deliver' : (keyCount>=1 ? 'escort' : 'wander');
+        ru.mode = ru.hasKey ? 'deliver' : (getPlayerKeyCountSafe()>=1 ? 'escort' : 'wander');
       }
 
       if(!ru.hasKey && nowMs > (ru.keyCooldownUntil||0) && keys.length){
@@ -3147,11 +3479,11 @@ function pushOutWalls(px,pz,rad){
         }
       }
 
-      if(rabbitFollowMode && !ru.hasKey && !ru.trapped && !player.userData.trapped){
-        ru.mode = 'follow';
+      if(commandFollowing){
+        ru.mode = (ru.mode==='borrow' || ru.mode==='toraiRun') ? ru.mode : 'follow';
         ru.followUntil = nowMs + 2500;
-      }else if(!rabbitFollowMode && ru.mode==='follow'){
-        ru.mode = ru.hasKey ? 'deliver' : (keyCount>=1 ? 'escort' : 'wander');
+      }else if((rabbitCommandMode!=='follow' || ru.commandMode!=='follow') && ru.mode==='follow'){
+        ru.mode = ru.hasKey ? 'deliver' : (playerHasObjectiveKey ? 'escort' : 'wander');
       }
 
       let tx=ru.patrolX, tz=ru.patrolZ;
@@ -3166,41 +3498,110 @@ function pushOutWalls(px,pz,rad){
         else ru.mode='wander';
       }
       if(ru.hasKey && nowMs < (ru.mustReturnKeyUntil||0)){ ru.mode='deliver'; ru.helpAggroUntil = 0; ru.deliverDelayUntil = 0; }
-      if(ru.hasKey || ru.mode==='deliver'){
-        if(nowMs < (ru.deliverDelayUntil||0)){
+      if(ru.hasKey || ru.mode==='deliver' || ru.mode==='borrow' || ru.mode==='toraiRun'){
+        if(ru.mode==='borrow' && nowMs < (ru.deliverDelayUntil||0)){
+          tx = (ru.scatterX!=null) ? ru.scatterX : r.position.x;
+          tz = (ru.scatterZ!=null) ? ru.scatterZ : r.position.z;
+        } else if(nowMs < (ru.deliverDelayUntil||0) && ru.mode!=='toraiRun'){
           ru.mode='linger';
           tx = r.position.x + Math.sin(nowMs*0.003 + supportRabbits.indexOf(r))*1.2;
           tz = r.position.z + Math.cos(nowMs*0.003 + supportRabbits.indexOf(r))*1.2;
-        } else {
+        } else if(ru.mode!=='toraiRun'){
           ru.mode='deliver';
           tx=player.position.x; tz=player.position.z;
           if(nowMs - (ru.lastTalkAt||0) > 7000 && Math.random() < dt*0.25) supportRabbitSay(r, pickLine(rabbitBark.status));
+        }
+      }
+      if(ru.mode==='toraiRun' && ru.hasKey){
+        let targetM = nearestM;
+        if(!targetM){
+          let bestM=null, bestD=999;
+          for(const m of monsters){ const md2=Math.hypot(m.position.x-r.position.x, m.position.z-r.position.z); if(md2<bestD){ bestD=md2; bestM=m; } }
+          targetM = bestM;
+        }
+        if(nowMs < (ru.specialRunUntil||0)){
+          const baseX = (ru.scatterX!=null) ? ru.scatterX : r.position.x;
+          const baseZ = (ru.scatterZ!=null) ? ru.scatterZ : r.position.z;
+          tx = baseX; tz = baseZ;
+        }else if(targetM){
+          tx = targetM.position.x; tz = targetM.position.z;
+        }else{
+          ru.mode = 'deliver';
+          tx = player.position.x; tz = player.position.z;
         }
       }
       if(ru.mode==='aggro' && nearestM){
         const sx = ru.scatterX != null ? ru.scatterX : (player.position.x + (supportRabbits.indexOf(r)-1)*4.5);
         const sz = ru.scatterZ != null ? ru.scatterZ : (player.position.z + 5.0);
         tx = sx; tz = sz;
-        if(nowMs > (ru.helpAggroUntil||0)) ru.mode = ru.hasKey ? 'deliver' : (keyCount>=1 ? 'escort' : 'wander');
+        if(nowMs > (ru.helpAggroUntil||0)) ru.mode = ru.hasKey ? 'deliver' : (getPlayerKeyCountSafe()>=1 ? 'escort' : 'wander');
       }
       if(ru.mode==='follow'){
-        const idx = (ru.followSlot!=null) ? ru.followSlot : supportRabbits.indexOf(r);
-        const slots = Math.max(1, supportRabbits.length);
+        const activeFollowers = getUntrappedSupportRabbits();
+        const idxRaw = activeFollowers.indexOf(r);
+        const idx = idxRaw >= 0 ? idxRaw : ((ru.followSlot!=null) ? ru.followSlot : getSupportRabbitList().indexOf(r));
         const row = Math.floor(idx/2);
         const side = (idx%2===0) ? -1 : 1;
-        const lateral = (0.9 + row*0.2) * side * (1.6 + slots*0.15);
-        const behind = 2.8 + row*1.7;
+        const distToPlayer = Math.hypot(r.position.x-player.position.x, r.position.z-player.position.z);
+        const rowGap = 0.9;
+        const lateralBase = side * (0.9 + row*rowGap) + (ru.followSideBias||0) * 0.18;
+        const baseBehind = 1.85 + row*0.58 + (ru.followDistBias||0) * 0.18;
+        if(ru.followDistNow==null) ru.followDistNow = baseBehind;
+        const minFollow = Math.max(1.45, baseBehind - 0.18);
+        const maxFollow = Math.min(3.15, baseBehind + 0.22);
+        if(ru.followDistTarget==null) ru.followDistTarget = baseBehind;
+        if(ru.followDriftUntil==null) ru.followDriftUntil = nowMs + 2200 + Math.random()*1800;
+        if(nowMs >= ru.followDriftUntil){
+          ru.followDistTarget = minFollow + Math.random() * (maxFollow - minFollow);
+          ru.followDriftUntil = nowMs + 2600 + Math.random()*2200;
+        }
+        const desiredBehind = Math.max(minFollow, Math.min(maxFollow, ru.followDistTarget));
+        ru.followDistNow += (desiredBehind - ru.followDistNow) * 0.018;
         const yaw = player.rotation.y || 0;
         const sinY = Math.sin(yaw), cosY = Math.cos(yaw);
-        tx = player.position.x - sinY*behind + cosY*lateral;
-        tz = player.position.z - cosY*behind - sinY*lateral;
+        let targetX;
+        let targetZ;
+        if(distToPlayer > 6.2){
+          const catchSide = side * 0.55;
+          targetX = player.position.x - sinY*1.25 + cosY*catchSide;
+          targetZ = player.position.z - cosY*1.25 - sinY*catchSide;
+        }else if(distToPlayer < 1.25){
+          const awayX = r.position.x - player.position.x;
+          const awayZ = r.position.z - player.position.z;
+          const awayLen = Math.hypot(awayX, awayZ) || 1;
+          targetX = player.position.x + (awayX/awayLen) * 1.85 + cosY * lateralBase * 0.35;
+          targetZ = player.position.z + (awayZ/awayLen) * 1.85 - sinY * lateralBase * 0.35;
+        }else{
+          targetX = player.position.x - sinY*ru.followDistNow + cosY*lateralBase;
+          targetZ = player.position.z - cosY*ru.followDistNow - sinY*lateralBase;
+        }
+        if(isWallAt(targetX, targetZ)){
+          const ring = 1.7 + row*0.35;
+          const ang = yaw + side*0.75 + row*0.35;
+          targetX = player.position.x + Math.sin(ang) * ring;
+          targetZ = player.position.z + Math.cos(ang) * ring;
+        }
+        const sep = applyRabbitSeparationTarget(r, targetX, targetZ, 0.70, 2.15);
+        targetX = sep.x; targetZ = sep.z;
+        if(ru.followAnchorX==null || ru.followAnchorZ==null){
+          ru.followAnchorX = r.position.x;
+          ru.followAnchorZ = r.position.z;
+        }
+        const snap = distToPlayer > 10.0;
+        const smoothing = snap ? 0.20 : ((performance.now() < (ru.followLeadInUntil||0)) ? 0.14 : 0.07);
+        ru.followAnchorX += (targetX - ru.followAnchorX) * smoothing;
+        ru.followAnchorZ += (targetZ - ru.followAnchorZ) * smoothing;
+        tx = ru.followAnchorX;
+        tz = ru.followAnchorZ;
       }
       if(ru.mode==='escort'){
         const idx = supportRabbits.indexOf(r);
         const escortAng = (idx/Math.max(1,supportRabbits.length))*Math.PI*2 + nowMs*0.00055;
         tx = player.position.x + Math.sin(escortAng)*(2.3 + idx*0.35);
         tz = player.position.z + Math.cos(escortAng)*(2.3 + idx*0.35);
-        if(playerChased && nearestM && nowMs > (ru.aggroCooldownUntil||0)){
+        if(!playerHasObjectiveKey){
+          ru.mode = ru.hasKey ? 'deliver' : 'wander';
+        }else if(playerChased && nearestM && nowMs > (ru.aggroCooldownUntil||0)){
           ru.mode = 'aggro';
           ru.helpAggroUntil = nowMs + 4200;
           ru.aggroCooldownUntil = nowMs + 60000;
@@ -3229,11 +3630,15 @@ function pushOutWalls(px,pz,rad){
         tx=ru.patrolX; tz=ru.patrolZ;
       }
 
+      if(ru.mode==='follow' || ru.mode==='escort' || ru.mode==='aggro'){
+        const sep = applyRabbitSeparationTarget(r, tx, tz, ru.mode==='follow' ? 0.70 : 1.35);
+        tx = sep.x; tz = sep.z;
+      }
       const dx=tx-r.position.x, dz=tz-r.position.z, d=Math.hypot(dx,dz);
       if(d>0.05){
-        const fast = (isChased || ru.mode==='deliver' || ru.mode==='getKey' || ru.mode==='aggro' || ru.mode==='escort');
+        const fast = (isChased || ru.mode==='deliver' || ru.mode==='getKey' || ru.mode==='aggro' || ru.mode==='escort' || ru.mode==='follow');
         const carryingBoost = ru.hasKey ? 1.18 : 1.0;
-        const sp = fast ? 8.9*1.55*carryingBoost : 8.9*carryingBoost;
+        const sp = (ru.mode==='follow') ? 8.9*1.9*carryingBoost : (fast ? 8.9*1.55*carryingBoost : 8.9*carryingBoost);
         const beforeX=r.position.x, beforeZ=r.position.z;
         const moved = supportRabbitMoveToward(r, tx, tz, sp, dt, 0.48);
         const prog = moved.prog || Math.hypot(r.position.x-beforeX, r.position.z-beforeZ);
@@ -3245,11 +3650,28 @@ function pushOutWalls(px,pz,rad){
         if(prog<0.024) ru.stuckT = (ru.stuckT||0) + dt; else ru.stuckT = Math.max(0, (ru.stuckT||0) - dt*0.6);
         if((ru.stuckT||0) > 0.18){
           ru.avoidTurn = (ru.avoidTurn||1) * -1;
-          const bumpAng = r.rotation.y + ru.avoidTurn * 1.15;
-          const bump = resolveMoveAt(r.position.x, r.position.z, r.position.x + Math.sin(bumpAng)*0.72, r.position.z + Math.cos(bumpAng)*0.72, 0.48);
-          r.position.x = bump.x; r.position.z = bump.z;
-          const pt = randPointInSector(sectorDefs[(supportRabbits.indexOf(r)+1)%sectorDefs.length]);
-          ru.patrolX = pt.x; ru.patrolZ = pt.z; ru.waitT = 0.08; ru.mode = ru.hasKey ? 'deliver' : (keyCount>=1 ? 'escort' : 'wander'); ru.stuckT = 0;
+          const escape = findAgentEscapeMove(r, 0.48, ru.avoidTurn||1, 0.92);
+          if(escape.prog > 0.04){
+            r.position.x = escape.x; r.position.z = escape.z;
+            ru.patrolX = escape.tx; ru.patrolZ = escape.tz;
+            r.rotation.y = escape.ang;
+          }else{
+            const bumpAng = r.rotation.y + ru.avoidTurn * 1.15;
+            const bump = resolveMoveAt(r.position.x, r.position.z, r.position.x + Math.sin(bumpAng)*0.72, r.position.z + Math.cos(bumpAng)*0.72, 0.48);
+            r.position.x = bump.x; r.position.z = bump.z;
+            const pt = randPointInSector(sectorDefs[(supportRabbits.indexOf(r)+1)%sectorDefs.length]);
+            ru.patrolX = pt.x; ru.patrolZ = pt.z;
+          }
+          ru.waitT = 0.08;
+          if(ru.commandMode==='follow' && rabbitCommandMode==='follow' && !ru.trapped){
+            ru.mode = 'follow';
+            ru.followUntil = nowMs + 2500;
+            ru.followAnchorX = r.position.x;
+            ru.followAnchorZ = r.position.z;
+          }else{
+            ru.mode = ru.hasKey ? 'deliver' : (getPlayerKeyCountSafe()>=1 ? 'escort' : 'wander');
+          }
+          ru.stuckT = 0;
         }
       }
       ru.lastX = r.position.x; ru.lastZ = r.position.z;
@@ -3265,12 +3687,24 @@ function pushOutWalls(px,pz,rad){
         }
       }
       if(!ru.hasKey && keyCount>=1 && pd<1.1 && nowMs > (ru.nextTransferAt||0)){
-        keyCount = 0; lastPlayerKeyAwarenessAt = performance.now(); $("pKey").textContent="🔑 "+keyCount; updateKeyIndicator();
-        ru.hasKey = true; ru.mode='deliver'; ru.forceKeyHelpUntil = 0; ru.deliverDelayUntil = 0; ru.mustReturnKeyUntil = nowMs + 14000; ru.keyMarkUntil = nowMs + 12000; ru.nextTransferAt = nowMs + 800; keyRevealUntil = nowMs + 5000; keyRevealStart = nowMs; lastPlayerKeyAwarenessAt = nowMs;
-        supportRabbitSay(r, pickLine(rabbitBark.handoff));
+        if(toraiStealArmed && ru.nick!==TORAI_NAME) continue;
+        setPlayerKeyCount(0, performance.now());
+        ru.hasKey = true; ru.forceKeyHelpUntil = 0; ru.keyMarkUntil = nowMs + 12000; ru.nextTransferAt = nowMs + 800; keyRevealUntil = nowMs + 5000; keyRevealStart = nowMs; lastPlayerKeyAwarenessAt = nowMs;
+        if(ru.nick===TORAI_NAME && toraiStealArmed){
+          toraiStealArmed = false;
+          triggerToraiKeyRun(r, nowMs);
+        }else{
+          ru.mode='borrow';
+          ru.deliverDelayUntil = nowMs + 2200;
+          ru.mustReturnKeyUntil = nowMs + 5000;
+          const ang = Math.atan2(r.position.z-player.position.z, r.position.x-player.position.x) + (-0.5 + Math.random()*1.0);
+          ru.scatterX = player.position.x + Math.cos(ang)*(7.5 + Math.random()*2.5);
+          ru.scatterZ = player.position.z + Math.sin(ang)*(7.5 + Math.random()*2.5);
+          supportRabbitSay(r, Math.random()<0.5 ? '나만 믿어!' : '곧 다시 돌려줄게!');
+        }
       }
-      if(ru.hasKey && nowMs > (ru.nextTransferAt||0)){
-        for(const other of supportRabbits){
+      if(ru.hasKey && ru.mode!=='toraiRun' && nowMs > (ru.nextTransferAt||0)){
+        for(const other of getSupportRabbitList()){
           if(other===r) continue;
           const ou=other.userData||{};
           if(ou.trapped || ou.hasKey) continue;
@@ -3291,8 +3725,8 @@ function pushOutWalls(px,pz,rad){
           addChat('회색 토끼가 열쇠로 철창을 열어 주었다!');
           placeKey();
         }else if(keyCount<1){
-          ru.hasKey = false; ru.mode='wander'; ru.mustReturnKeyUntil = 0; ru.nextTransferAt = nowMs + 900;
-          keyCount = 1; lastPlayerKeyAwarenessAt = nowMs; $("pKey").textContent="🔑 "+keyCount; updateKeyIndicator();
+          ru.hasKey = false; ru.mode='wander'; ru.commandMode='scatter'; ru.specialRunUntil = 0; ru.mustReturnKeyUntil = 0; ru.nextTransferAt = nowMs + 900;
+          setPlayerKeyCount(1, nowMs);
           supportRabbitSay(r, pickLine(rabbitBark.handoff));
           addChat('회색 토끼가 열쇠를 건네주었다!');
         }
@@ -3322,33 +3756,59 @@ function pushOutWalls(px,pz,rad){
       const d=Math.hypot(dx,dz);
       nearestMonsterDist = Math.min(nearestMonsterDist, d);
       const playerHasObjectiveKey = keyCount>=1;
+      const nearbyEscortRabbits = [];
+      if(playerHasObjectiveKey){
+        for(const r of supportRabbits){
+          const ru = r.userData||{};
+          if(ru.trapped || ru.hasKey) continue;
+          if(ru.mode!=='follow' && ru.mode!=='escort' && ru.mode!=='aggro') continue;
+          const pdRabbit = Math.hypot(r.position.x-player.position.x, r.position.z-player.position.z);
+          if(pdRabbit <= 4.8) nearbyEscortRabbits.push(r);
+        }
+      }
+      const preferredEscortRabbit = nearbyEscortRabbits.length ? nearbyEscortRabbits.sort((a,b)=>Math.hypot(a.position.x-m.position.x,a.position.z-m.position.z)-Math.hypot(b.position.x-m.position.x,b.position.z-m.position.z))[0] : null;
       const forceGlobalPlayerChase = !rabbitGhost && !rabbitTrapped && (hardMode || playerHasObjectiveKey);
       const monsterSightRange = forceGlobalPlayerChase ? 9999 : 15.5;
       const monsterSightFov = forceGlobalPlayerChase ? 360 : 122;
       if((mu.nextSenseAt||0) <= nowMs){
-        let chaseTargetNow = {type:'player', obj:player, x:player.position.x, z:player.position.z, dist:d};
-        if(!forceGlobalPlayerChase){
-          for(const r of supportRabbits){
-            const ru = r.userData||{};
-            if(ru.trapped) continue;
-            const rd = Math.hypot(r.position.x-m.position.x, r.position.z-m.position.z);
-            const priority = (nowMs < (ru.helpAggroUntil||0)) ? 8 : ((playerHasObjectiveKey && rd < 11.5) ? 3 : 0);
-            if((priority>0 || rd < chaseTargetNow.dist-0.2) && canSeeTarget(m, r.position.x, r.position.z, 18, 102)){
-              chaseTargetNow = {type:'rabbit', obj:r, x:r.position.x, z:r.position.z, dist:rd, priority:priority};
+        let chaseTargetNow = {type:'player', obj:player, x:player.position.x, z:player.position.z, dist:d, priority:0};
+        for(const r of supportRabbits){
+          const ru = r.userData||{};
+          if(ru.trapped) continue;
+          const rd = Math.hypot(r.position.x-m.position.x, r.position.z-m.position.z);
+          const nearPlayer = Math.hypot(r.position.x-player.position.x, r.position.z-player.position.z) <= 4.8;
+          const isEscortBait = !!(playerHasObjectiveKey && nearPlayer && !ru.hasKey && (ru.mode==='follow' || ru.mode==='escort' || ru.mode==='aggro'));
+          const priority = isEscortBait ? 14 : ((nowMs < (ru.helpAggroUntil||0)) ? 10 : ((playerHasObjectiveKey && rd < 11.5) ? 3 : 0));
+          const canSenseRabbit = isEscortBait ? true : canSeeTarget(m, r.position.x, r.position.z, 18, 102);
+          if((priority>0 || (!forceGlobalPlayerChase && rd < chaseTargetNow.dist-0.2)) && canSenseRabbit){
+            if(priority > (chaseTargetNow.priority||0) || (priority === (chaseTargetNow.priority||0) && rd < chaseTargetNow.dist)){
+              chaseTargetNow = {type:'rabbit', obj:r, x:r.position.x, z:r.position.z, dist:rd, priority:priority, isEscortBait:isEscortBait};
             }
           }
         }
-        const seesTargetNow = forceGlobalPlayerChase ? true : ((chaseTargetNow.type==='player') ? (!rabbitGhost && !rabbitTrapped && canSeeTarget(m, chaseTargetNow.x, chaseTargetNow.z, monsterSightRange, monsterSightFov)) : canSeeTarget(m, chaseTargetNow.x, chaseTargetNow.z, 16.5, 138));
-        mu.sense = { chaseTarget: chaseTargetNow, seesTarget: seesTargetNow, playerDist: d, playerHasObjectiveKey: playerHasObjectiveKey, forceGlobalPlayerChase: forceGlobalPlayerChase };
+        const seesTargetNow = forceGlobalPlayerChase ? true : ((chaseTargetNow.type==='player') ? (!rabbitGhost && !rabbitTrapped && canSeeTarget(m, chaseTargetNow.x, chaseTargetNow.z, monsterSightRange, monsterSightFov)) : (chaseTargetNow.isEscortBait ? true : canSeeTarget(m, chaseTargetNow.x, chaseTargetNow.z, 16.5, 138)));
+        mu.sense = { chaseTarget: chaseTargetNow, seesTarget: seesTargetNow, playerDist: d, playerHasObjectiveKey: playerHasObjectiveKey, forceGlobalPlayerChase: forceGlobalPlayerChase, preferredEscortRabbit: preferredEscortRabbit };
         mu.nextSenseAt = nowMs + ((mu.chase || playerHasObjectiveKey) ? (LOW_SPEC_MODE ? 95 : 65) : (LOW_SPEC_MODE ? 150 : 110));
       }
       const msense = mu.sense || {};
-      const chaseTarget = msense.chaseTarget || {type:'player', obj:player, x:player.position.x, z:player.position.z, dist:d};
+      const chaseTarget = msense.chaseTarget || {type:'player', obj:player, x:player.position.x, z:player.position.z, dist:d, priority:0};
       const seesTarget = !!msense.seesTarget;
       if(forceGlobalPlayerChase){
-        mu.chase = true; mu.lostSightT = 0; mu.targetType = 'player'; mu.targetRef = player;
+        if(chaseTarget.type==='rabbit' && chaseTarget.obj){
+          mu.chase = true; mu.lostSightT = 0; mu.targetType = 'rabbit'; mu.targetRef = chaseTarget.obj;
+        }else{
+          mu.chase = true; mu.lostSightT = 0; mu.targetType = 'player'; mu.targetRef = player;
+        }
       }
       if(mu.chase){
+        const currentPriority = (mu.targetType==='rabbit' && mu.targetRef && mu.targetRef.userData)
+          ? (((playerHasObjectiveKey && Math.hypot(mu.targetRef.position.x-player.position.x, mu.targetRef.position.z-player.position.z) <= 4.8 && !mu.targetRef.userData.hasKey && (mu.targetRef.userData.mode==='follow' || mu.targetRef.userData.mode==='escort' || mu.targetRef.userData.mode==='aggro')) ? 14 : ((nowMs < (mu.targetRef.userData.helpAggroUntil||0)) ? 10 : 0)))
+          : 0;
+        if((chaseTarget.priority||0) > currentPriority || (forceGlobalPlayerChase && chaseTarget.type==='rabbit' && mu.targetType!=='rabbit')){
+          mu.targetType = chaseTarget.type;
+          mu.targetRef = chaseTarget.obj;
+          mu.lostSightT = 0;
+        }
         const targetObj = (mu.targetType==='rabbit') ? mu.targetRef : player;
         const tx0 = targetObj ? targetObj.position.x : chaseTarget.x;
         const tz0 = targetObj ? targetObj.position.z : chaseTarget.z;
@@ -3398,7 +3858,9 @@ function pushOutWalls(px,pz,rad){
       const mdx=tx-m.position.x, mdz=tz-m.position.z, md=Math.hypot(mdx,mdz);
       if(md>0.04){
         const speedBuff = (performance.now() < (mu.speedBuffUntil||0)) ? 1.45 : 1.0;
-        const sp = 6.8 * speedBuff;
+        const rabbitTarget = (mu.targetType==='rabbit' && mu.targetRef && mu.targetRef.userData) ? mu.targetRef.userData : null;
+        const pretendChaseScale = (rabbitTarget && rabbitTarget.hasKey && mu.targetRef.userData.nick!==TORAI_NAME) ? 0.76 : 1.0;
+        const sp = 6.8 * speedBuff * pretendChaseScale;
         const beforeX=m.position.x, beforeZ=m.position.z;
         const mout = agentMoveToward(m, tx, tz, sp, dt, 0.60 * (m.scale.x||1), mu.avoidTurn||1);
         const dirx = m.position.x-beforeX, dirz = m.position.z-beforeZ;
@@ -3408,7 +3870,20 @@ function pushOutWalls(px,pz,rad){
         }
         if(mout.prog<0.025){ mu.stuckT = (mu.stuckT||0)+dt; }
         else { mu.stuckT = Math.max(0, (mu.stuckT||0)-dt*0.6); }
-        if((mu.stuckT||0) > 0.16){ const nudgeAng = m.rotation.y + (mu.avoidTurn||1) * 1.1; const nudge = resolveMoveAt(m.position.x, m.position.z, m.position.x + Math.sin(nudgeAng)*0.78, m.position.z + Math.cos(nudgeAng)*0.78, 0.60 * (m.scale.x||1)); m.position.x = nudge.x; m.position.z = nudge.z; mu.avoidTurn = (mu.avoidTurn||1) * -1; mu.patrolT = 0; mu.stuckT = 0; m.rotation.y = nudgeAng; }
+        if((mu.stuckT||0) > 0.16){
+          mu.avoidTurn = (mu.avoidTurn||1) * -1;
+          const escape = findAgentEscapeMove(m, 0.60 * (m.scale.x||1), mu.avoidTurn||1, 1.02);
+          if(escape.prog > 0.05){
+            m.position.x = escape.x; m.position.z = escape.z;
+            m.rotation.y = escape.ang;
+            mu.patrolX = escape.tx; mu.patrolZ = escape.tz;
+          }else{
+            const nudgeAng = m.rotation.y + (mu.avoidTurn||1) * 1.1;
+            const nudge = resolveMoveAt(m.position.x, m.position.z, m.position.x + Math.sin(nudgeAng)*0.78, m.position.z + Math.cos(nudgeAng)*0.78, 0.60 * (m.scale.x||1));
+            m.position.x = nudge.x; m.position.z = nudge.z; m.rotation.y = nudgeAng;
+          }
+          mu.patrolT = 0; mu.stuckT = 0;
+        }
       }
       mu.stunCd = Math.max(0, (mu.stunCd||0)-dt);
       for(const s of [...shelves]){
@@ -3437,7 +3912,8 @@ function pushOutWalls(px,pz,rad){
       for(const r of supportRabbits){
         const ru = r.userData || {};
         if(!ru.trapped){
-          if(Math.hypot(m.position.x-r.position.x, m.position.z-r.position.z) < 0.95*(m.scale.x||1)){
+          const rabbitCatchDist = (ru.hasKey && ru.nick!==TORAI_NAME) ? 0.52*(m.scale.x||1) : 0.95*(m.scale.x||1);
+          if(Math.hypot(m.position.x-r.position.x, m.position.z-r.position.z) < rabbitCatchDist){
             const wasHoldingKey = !!ru.hasKey;
             ru.trapped = true;
             ru.hasKey = false;
@@ -3446,6 +3922,7 @@ function pushOutWalls(px,pz,rad){
             r.position.set(slotR.x, 0.05, slotR.z);
             supportRabbitSay(r, pickLine(rabbitBark.caught));
             if(wasHoldingKey){
+              if(ru.nick===TORAI_NAME) supportRabbitSay(r, '아 열쇠 놓쳤다..');
               addChat('회색 토끼가 잡히며 열쇠가 맵 어딘가에 다시 나타났다!');
               placeKey();
             }
@@ -3454,11 +3931,10 @@ function pushOutWalls(px,pz,rad){
       }
       if(nowMs < rabbitInvulnerableUntil) continue;
       if(!rabbitGhost && !rabbitInCage && d < 1.28*(m.scale.x||1)){
-        rabbitCaughtCount++;
-        updateCaughtCloud();
+        markRabbitCaught(nowMs);
         addChat("⚠️ 괴물에게 잡힘! ("+rabbitCaughtCount+"/2)");
         for(const r of supportRabbits){ try{ supportRabbitSay(r, pickLine(rabbitBark.rescue)); }catch(e){} }
-        if(keyCount>=1){ keyCount=0; $("pKey").textContent="🔑 "+keyCount; updateKeyIndicator(); for(const m of monsters){ if(m.userData){ m.userData.lostSightT = 9; m.userData.chase = false; m.userData.targetType=''; m.userData.targetRef=null; m.userData.patrolT = 0; } } placeKey(); addChat('[싱글] 열쇠가 맵 어딘가로 다시 이동했다!'); }
+        if(keyCount>=1){ setPlayerKeyCount(0); toraiStealArmed = false; for(const m of monsters){ if(m.userData){ m.userData.lostSightT = 9; m.userData.chase = false; m.userData.targetType=''; m.userData.targetRef=null; m.userData.patrolT = 0; } } placeKey(); addChat('[싱글] 열쇠가 맵 어딘가로 다시 이동했다!'); }
         if(rabbitCaughtCount>=2){
           player.userData.trapped = true;
           cage.userData.locked = true; cage.userData.doorOpen = 0; cage.userData.autoCloseT = 0; cageCdSprite.visible = false;
@@ -3565,7 +4041,10 @@ function pushOutWalls(px,pz,rad){
     mmCtx.fillStyle="rgba(255,255,255,0.95)"; mmCtx.beginPath(); mmCtx.arc(p.x,p.y,3.8,0,Math.PI*2); mmCtx.fill();
     const nowMs = performance.now();
     for(const r of supportRabbits){
+      if(!r || !r.userData) continue;
       const rp=worldToMM(r.position.x,r.position.z);
+      mmCtx.fillStyle = r.userData.trapped ? "rgba(180,190,205,0.72)" : "rgba(210,220,235,0.96)";
+      mmCtx.beginPath(); mmCtx.arc(rp.x,rp.y,2.9,0,Math.PI*2); mmCtx.fill();
       if(r.userData && r.userData.hasKey){
         mmCtx.fillStyle="rgba(255,214,80,0.98)"; mmCtx.beginPath(); mmCtx.arc(rp.x,rp.y,3.4,0,Math.PI*2); mmCtx.fill();
         mmCtx.strokeStyle="rgba(255,234,150,0.95)"; mmCtx.lineWidth=1.6; mmCtx.beginPath(); mmCtx.arc(rp.x,rp.y,6.6,0,Math.PI*2); mmCtx.stroke();
@@ -3678,6 +4157,9 @@ if(monsterReleaseLeft>0){
     }
     const _ig = player.getObjectByName("invulnGlow");
     if(_ig) _ig.visible = (now < rabbitInvulnerableUntil);
+    if(rabbitCaughtCount===1 && rabbitCaughtResetAt>0 && now >= rabbitCaughtResetAt){
+      clearRabbitCaughtPenalty('☁️ 먹구름 상태가 사라졌습니다. 다시 0/2 상태입니다.');
+    }
 
     // Sprint charge update + UI
     if(sprint.active){
@@ -3694,8 +4176,9 @@ if(monsterReleaseLeft>0){
     if(sprintMeterEdge){ sprintMeterEdge.style.top = `${(used*100).toFixed(1)}%`; }
 
 
+    ensureLooseKeyExists();
     for(const k of keys){
-      k.visible = (keyRevealUntil > now) && !(seekerView && keyCount<=0);
+      k.visible = !seekerView;
       k.rotation.y += dt*1.8;
       k.rotation.x = Math.sin(now/420 + k.userData.phase)*0.10;
       k.position.y = k.userData.baseY + Math.sin(now/450 + k.userData.phase)*0.22;
@@ -3713,10 +4196,14 @@ if(monsterReleaseLeft>0){
       }
     }
 
-    const turn=(keysDown.a?1:0)-(keysDown.d?1:0)+(-joyX);
+    const turnLeft  = (keysDown.a?1:0) || (keysDown.arrowleft?1:0);
+    const turnRight = (keysDown.d?1:0) || (keysDown.arrowright?1:0);
+    const turn=(turnLeft?1:0)-(turnRight?1:0)+(-joyX);
     yaw += turn*2.35*dt;
 
-    const fb=(keysDown.w?1:0)-(keysDown.s?1:0)+(-joyY);
+    const forwardKey  = (keysDown.w?1:0) || (keysDown.arrowup?1:0);
+    const backwardKey = (keysDown.s?1:0) || (keysDown.arrowdown?1:0);
+    const fb=(forwardKey?1:0)-(backwardKey?1:0)+(-joyY);
     // sprint / water slow
     const inWater = isInPool(player.position.x, player.position.z);
     const wantSprint = (!promptVisible()) && (sprint.hold || shiftHeld);
@@ -3803,7 +4290,6 @@ if(monsterReleaseLeft>0){
 
     if(minimapTickAcc >= MINIMAP_INTERVAL){ drawMinimap(); minimapTickAcc = 0; }
     // keep player-only HUD visual updates cheap and deterministic
-    updateKeyIndicator();
     updateDecoCull(dt);
 
     renderer.render(scene,camera);
