@@ -120,11 +120,24 @@
 
 
   #startOverlay{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;background:rgba(3,5,10,.82);backdrop-filter:blur(4px);padding:18px}
-  #startCard{width:min(92vw,560px);padding:18px 18px 16px;border-radius:20px;background:rgba(20,24,32,.96);border:1px solid rgba(255,255,255,.12);box-shadow:0 18px 60px rgba(0,0,0,.4)}
+  #startHero{display:flex;flex-direction:column;align-items:center;gap:14px;width:min(92vw,560px)}
+  #gameTitleBanner{width:100%;padding:18px 22px;border-radius:24px;background:linear-gradient(180deg, rgba(255,248,225,.18), rgba(255,255,255,.06));border:1px solid rgba(255,255,255,.14);box-shadow:0 18px 60px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.18);backdrop-filter:blur(8px);text-align:center}
+  #gameTitleBanner .eyebrow{font-size:12px;font-weight:800;letter-spacing:0.34em;text-transform:uppercase;color:rgba(255,239,186,.88);margin-bottom:8px}
+  #gameTitleBanner .title{font-size:clamp(30px, 6vw, 44px);font-weight:1000;line-height:1.05;letter-spacing:-0.03em;background:linear-gradient(180deg, #fff7dc 0%, #ffe7a3 48%, #ffd062 100%);-webkit-background-clip:text;background-clip:text;color:transparent;text-shadow:0 10px 30px rgba(255,200,80,.12)}
+  #gameTitleBanner .sub{margin-top:8px;font-size:13px;color:rgba(233,238,252,.78)}
+  #startCard{width:100%;padding:18px 18px 16px;border-radius:20px;background:rgba(20,24,32,.96);border:1px solid rgba(255,255,255,.12);box-shadow:0 18px 60px rgba(0,0,0,.4)}
   #startCard h1{margin:0 0 10px;font-size:22px}
   #startCard p{margin:0 0 10px;line-height:1.55;font-size:14px;color:rgba(233,238,252,.92)}
   #startCard .mini{font-size:12px;opacity:.82}
   #startStartBtn{margin-top:8px;width:100%;padding:13px 14px;border-radius:14px;border:1px solid rgba(255,255,255,.12);background:#5067ff;color:#fff;font-weight:900;cursor:pointer;font-size:15px}
+  #startHero.hard #gameTitleBanner{border-color:rgba(255,90,90,.45);box-shadow:0 18px 48px rgba(120,16,16,.28)}
+  #startHero.hard .eyebrow{color:#ffb7b7}
+  #startHero.hard .title{color:#ffd9d9;text-shadow:0 8px 26px rgba(255,65,65,.32)}
+  #startHero.hard .sub{color:#ffd3d3}
+  #startHero.hard #startCard h1{color:#ffd6d6}
+  #startHero.hard #startStartBtn{background:linear-gradient(180deg,#ff5c5c,#d92f2f); box-shadow:0 10px 28px rgba(180,30,30,.35)}
+  #gameTitleBanner{cursor:pointer;user-select:none;transition:transform .15s ease, box-shadow .2s ease, border-color .2s ease}
+  #gameTitleBanner:hover{transform:translateY(-1px)}
 
 </style>
 </head>
@@ -190,6 +203,12 @@
 
 
   <div id="startOverlay">
+    <div id="startHero">
+      <div id="gameTitleBanner" title="클릭하면 하드모드 전환">
+        <div class="eyebrow">Backrooms Escape</div>
+        <div class="title">토끼 탈출</div>
+        <div class="sub">열쇠를 찾아 문을 열고, 괴물을 피해 끝까지 도망치세요</div>
+      </div>
     <div id="startCard">
       <h1>Backrooms 3D · 토끼 탈출</h1>
       <p>흰 토끼인 플레이어는 열쇠를 모아 탈출문 자물쇠 3개를 풀고 도망쳐야 합니다. 괴물은 총 4마리이며 각자 구역을 순찰하다가 플레이어를 보면 추격합니다. 동시에 최대 2마리까지만 본격 추격합니다.</p>
@@ -197,6 +216,7 @@
       <p><b>조작</b> PC: W/S 이동 · A/D 회전 · E 상호작용/질주 · Enter 채팅</p>
       <p class="mini">모바일은 화면 터치로 조작합니다. 왼쪽 조이스틱으로 이동하고, 화면을 터치해 시점을 돌리며, 오른쪽 E 버튼으로 상호작용·빠른 이동을 할 수 있습니다.</p>
       <button id="startStartBtn">게임 시작</button>
+    </div>
     </div>
   </div>
 
@@ -303,15 +323,106 @@ chatIn.addEventListener("keydown", (e)=>{
 
 let playerName = "토끼";
 let seekerView = false; // 디버그/테스트용: 술래 시점이면 바닥 열쇠가 안 보이게
+let rabbitFollowMode = false;
+let rabbitFollowIssuedAt = 0;
+let hardMode = false;
+const NORMAL_SUPPORT_RABBIT_COUNT = 3;
+const HARD_SUPPORT_RABBIT_COUNT = 1;
+
+function getSupportRabbitTargetCount(){
+  return hardMode ? HARD_SUPPORT_RABBIT_COUNT : NORMAL_SUPPORT_RABBIT_COUNT;
+}
+
+function updateHardModeUi(){
+  const hero = $("startHero");
+  const titleMain = document.querySelector("#gameTitleBanner .title");
+  const cardTitle = document.querySelector("#startCard h1");
+  const startBtn = $("startStartBtn");
+  const sub = document.querySelector("#gameTitleBanner .sub");
+  if(hero) hero.classList.toggle("hard", !!hardMode);
+  if(titleMain) titleMain.textContent = hardMode ? "하드모드 토끼탈출" : "토끼 탈출";
+  if(cardTitle) cardTitle.textContent = hardMode ? "Backrooms 3D · 하드모드 토끼탈출" : "Backrooms 3D · 토끼 탈출";
+  if(sub) sub.textContent = hardMode
+    ? "괴물이 전역에서 몰려오고, 도움 토끼는 1마리만 함께합니다"
+    : "열쇠를 찾아 문을 열고, 괴물을 피해 끝까지 도망치세요";
+  if(startBtn) startBtn.textContent = hardMode ? "하드모드 시작" : "게임 시작";
+}
+function toggleHardMode(){
+  hardMode = !hardMode;
+  updateHardModeUi();
+}
+
+function isFollowCommand(text){
+  const t=(text||'').trim();
+  return /(따라와|따라와라|따라오라|따라오라고|따라오렴|따라와줘|따라오세요|follow me)/i.test(t);
+}
+function isScatterCommand(text){
+  const t=(text||'').trim();
+  return /(흩어져|흩어지|퍼져|각자 가|따로 돌아다녀|따로 다녀|scatter)/i.test(t);
+}
+function setSupportRabbitCommandMode(mode){
+  rabbitFollowMode = (mode==='follow');
+  rabbitFollowIssuedAt = performance.now();
+  try{ ensureSupportRabbits(); }catch(e){}
+  for(let i=0;i<supportRabbits.length;i++){
+    const r = supportRabbits[i];
+    if(!r || !r.userData || r.userData.trapped) continue;
+    const ru = r.userData;
+    if(mode==='follow'){
+      ru.mode = 'follow';
+      ru.followSlot = i;
+      ru.followUntil = rabbitFollowIssuedAt + 600000;
+      ru.scatterX = null; ru.scatterZ = null;
+      ru.helpAggroUntil = 0;
+      supportRabbitSay(r, i===0 ? '좋아, 간격 맞춰서 따라갈게!' : '서로 안 겹치게 뒤따라갈게!');
+    }else{
+      ru.mode = ru.hasKey ? 'deliver' : (keyCount>=1 ? 'escort' : 'wander');
+      ru.followUntil = 0;
+      const ang = (-0.9 + i*0.9);
+      const dist = 8.0 + i*1.4;
+      ru.scatterX = player.position.x + Math.cos(ang)*dist;
+      ru.scatterZ = player.position.z + Math.sin(ang)*dist;
+      ru.waitT = 0.12;
+      supportRabbitSay(r, i===0 ? '좋아, 다시 흩어져서 볼게!' : '알겠어, 각자 둘러볼게!');
+    }
+  }
+}
 
 function sendChat(){
   const v = chatIn.value.trim();
   if(!v) return false;
   addChat("나: "+v);
   let replied = false;
+  let commandHandled = false;
+  try{
+    if(typeof ensureSupportRabbits === "function") ensureSupportRabbits();
+  }catch(e){ console.warn("ensure support rabbits failed", e); }
+  try{
+    if(isFollowCommand(v)){
+      setSupportRabbitCommandMode('follow');
+      addChat('[토끼들] 간격을 두고 따라옵니다.');
+      commandHandled = true;
+    }else if(isScatterCommand(v)){
+      setSupportRabbitCommandMode('scatter');
+      addChat('[토끼들] 다시 흩어져 주변을 살핍니다.');
+      commandHandled = true;
+    }
+  }catch(e){ console.warn('rabbit command handling failed', e); }
   try{ replied = !!rabbitRespondToPlayerChat(v); }catch(e){ console.warn("rabbit chat reply failed", e); }
   if(!replied){
     try{ replied = !!forceImmediateRabbitReplies(v); }catch(e){ console.warn("rabbit immediate reply failed", e); }
+  }
+  if(!replied){
+    try{
+      const fallbackLine = (typeof makeRabbitReplyFromText === "function")
+        ? makeRabbitReplyFromText(v)
+        : "응응, 듣고 있어!";
+      addChat("토순이: "+fallbackLine);
+      replied = true;
+    }catch(e){ console.warn("rabbit fallback reply failed", e); }
+  }
+  if(commandHandled && !replied){
+    try{ forceImmediateRabbitReplies(v); }catch(e){}
   }
   chatIn.value="";
   return true;
@@ -1196,14 +1307,23 @@ function makeRabbit(){
 // Monster spawn room at the far north (12 o'clock). Monster is locked for the first 10 seconds.
 const countdownEl = $("countdown");
   const huntTimerEl = $("huntTimer");
-  function endGame(msg){
+  let gameStartAt = performance.now();
+  function formatDuration(sec){
+    sec = Math.max(0, Math.floor(sec));
+    const mm = String(Math.floor(sec/60)).padStart(2,'0');
+    const ss = String(sec%60).padStart(2,'0');
+    return mm + ':' + ss;
+  }
+  function endGame(msg, opts={}){
     if(gameOver) return;
     gameOver = true;
-    addChat("🏁 "+msg);
+    const isClear = !!opts.clear;
+    const elapsedSec = Math.max(0, Math.round((performance.now() - gameStartAt) / 1000));
+    addChat("🏁 "+msg + (isClear ? " · 걸린 시간 " + formatDuration(elapsedSec) : ""));
     const cd = $("countdown");
     cd.style.display="block";
-    cd.textContent = msg;
-    cd.style.background = "rgba(255,80,80,.25)";
+    cd.textContent = isClear ? "축하합니다!" : msg;
+    cd.style.background = isClear ? "rgba(80,200,120,.28)" : "rgba(255,80,80,.25)";
     // freeze input by clearing keysDown
     for(const k in keysDown) keysDown[k]=0;
     sprint.active=false; sprint.hold=false;
@@ -1211,7 +1331,10 @@ const countdownEl = $("countdown");
     const overlay = document.createElement('div');
     overlay.id = 'gameOverOverlay';
     overlay.style.cssText = 'position:fixed;inset:0;z-index:140;display:flex;align-items:center;justify-content:center;background:rgba(5,8,14,.82);backdrop-filter:blur(4px)';
-    overlay.innerHTML = '<div style="min-width:280px;max-width:86vw;background:rgba(10,14,24,.96);border:1px solid rgba(255,255,255,.12);border-radius:18px;padding:22px 18px;box-shadow:0 18px 50px rgba(0,0,0,.42);text-align:center;color:#eef3ff"><div style="font-size:28px;font-weight:900;margin-bottom:8px">게임 오버</div><div style="font-size:16px;opacity:.92;margin-bottom:16px">'+msg+'</div><button id="restartGameBtn" style="border:0;border-radius:14px;padding:12px 20px;font-weight:800;background:linear-gradient(180deg,#7ea6ff,#5b79ff);color:#fff;cursor:pointer">다시시작</button></div>';
+    const title = isClear ? 'Clear' : '게임 오버';
+    const sub = isClear ? '축하합니다!' : msg;
+    const timeHtml = isClear ? '<div style="font-size:18px;font-weight:800;opacity:.96;margin-top:4px;margin-bottom:16px">걸린 시간: ' + formatDuration(elapsedSec) + '</div>' : '<div style="font-size:16px;opacity:.92;margin-bottom:16px">'+msg+'</div>';
+    overlay.innerHTML = '<div style="min-width:280px;max-width:86vw;background:rgba(10,14,24,.96);border:1px solid rgba(255,255,255,.12);border-radius:18px;padding:22px 18px;box-shadow:0 18px 50px rgba(0,0,0,.42);text-align:center;color:#eef3ff"><div style="font-size:28px;font-weight:900;margin-bottom:8px">'+title+'</div><div style="font-size:16px;opacity:.92;'+(isClear?'margin-bottom:8px':'margin-bottom:16px')+'">'+sub+'</div>'+timeHtml+'<button id="restartGameBtn" style="border:0;border-radius:14px;padding:12px 20px;font-weight:800;background:linear-gradient(180deg,#7ea6ff,#5b79ff);color:#fff;cursor:pointer">다시시작</button></div>';
     document.body.appendChild(overlay);
     const btn = document.getElementById('restartGameBtn');
     if(btn) btn.onclick = ()=>location.reload();
@@ -2210,7 +2333,7 @@ const balls = [];
     rabbitKeyIcon.position.set(0.62, 2.15, 0);
     rabbitKeyIcon.visible = false;
     g.add(rabbitKeyIcon);
-    g.userData = { patrolX:0, patrolZ:0, waitT:0, keyCooldownUntil:0, hasKey:false, mode:'wander', lureUntil:0, nick, nameTag, bubble, bubbleUntil:0, rabbitKeyIcon, lastTalkAt:0, lastLine:'', lastSameLineAt:0, replyCooldownUntil:0, trapped:false, stuckT:0, lastX:0, lastZ:0, helpAggroUntil:0, aggroCooldownUntil:0, deliverDelayUntil:0, justGotKeyAt:0, keyMarkUntil:0, forceKeyHelpUntil:0, nextTransferAt:0, avoidTurn:0, mustReturnKeyUntil:0 };
+    g.userData = { patrolX:0, patrolZ:0, waitT:0, keyCooldownUntil:0, hasKey:false, mode:'wander', lureUntil:0, nick, nameTag, bubble, bubbleUntil:0, rabbitKeyIcon, lastTalkAt:0, lastLine:'', lastSameLineAt:0, replyCooldownUntil:0, trapped:false, stuckT:0, lastX:0, lastZ:0, helpAggroUntil:0, aggroCooldownUntil:0, deliverDelayUntil:0, justGotKeyAt:0, keyMarkUntil:0, forceKeyHelpUntil:0, nextTransferAt:0, avoidTurn:0, mustReturnKeyUntil:0, followSlot:0, followUntil:0, scatterX:null, scatterZ:null };
     return g;
   }
   function ensureMonsters(){
@@ -2235,8 +2358,9 @@ const balls = [];
     monster = monsters[0] || null;
   }
   function ensureSupportRabbits(){
-    if(supportRabbits.length) return;
-    for(let i=0;i<3;i++){
+    const targetCount = getSupportRabbitTargetCount();
+    if(supportRabbits.length >= targetCount) return;
+    for(let i=supportRabbits.length;i<targetCount;i++){
       const r = makeSupportRabbit();
       const sec = sectorDefs[(i+1)%sectorDefs.length];
       const spawn = randPointInSector(sec);
@@ -2247,6 +2371,7 @@ const balls = [];
   }
   keyCount = 0;
   doorProg = 0;
+  gameStartAt = performance.now();
   $("pKey").textContent="🔑 "+keyCount;
   $("pDoor").textContent="문: "+doorProg+"/3";
   addChat("[3D] 시작");
@@ -2337,22 +2462,45 @@ const balls = [];
   const sprintMeter = $("sprintMeter");
   const sprintMeterEdge = $("sprintMeterEdge");
   function promptVisible(){ return $("prompt").style.display!=="none" || $("mathModal").classList.contains("show"); }
+  function hasNearbyInteractable(){
+    if(chatMode || document.activeElement===chatIn || $("mathModal").classList.contains("show")) return false;
+    if(nearestObj(keys, 2.1)) return true;
+    const dDist=Math.hypot(doorG.position.x-player.position.x, doorG.position.z-player.position.z);
+    if(dDist<2.6) return true;
+    const cDist=Math.hypot(cage.position.x-player.position.x, cage.position.z-player.position.z);
+    if(cDist<3.0) return true;
+    const s=nearestObj(shelves, 2.7);
+    if(s && !s.userData.fallen) return true;
+    try{
+      if(playerInsideCage() && cage.userData.locked && !cage.userData.doorOpen) return true;
+    }catch(e){}
+    return false;
+  }
   function updateBtnELabel(){ btnELabel.textContent="E"; }
   updateBtnELabel();
 
   function setSprintHold(v){
     sprint.hold = v;
   }
-  btnE.addEventListener("pointerdown",(e)=>{
+  function pressMobileE(e){
     e.preventDefault();
-    if(promptVisible()){
+    if(promptVisible() || hasNearbyInteractable()){
+      setSprintHold(false);
       doInteract();
       return;
     }
     setSprintHold(true);
-  });
-  btnE.addEventListener("pointerup",(e)=>{ e.preventDefault(); setSprintHold(false); });
-  btnE.addEventListener("pointercancel",(e)=>{ e.preventDefault(); setSprintHold(false); });
+  }
+  function releaseMobileE(e){
+    e.preventDefault();
+    setSprintHold(false);
+  }
+  btnE.addEventListener("pointerdown", pressMobileE);
+  btnE.addEventListener("pointerup", releaseMobileE);
+  btnE.addEventListener("pointercancel", releaseMobileE);
+  btnE.addEventListener("touchstart", pressMobileE, {passive:false});
+  btnE.addEventListener("touchend", releaseMobileE, {passive:false});
+  btnE.addEventListener("touchcancel", releaseMobileE, {passive:false});
   btnE.addEventListener("contextmenu",(e)=>e.preventDefault());
 
   addEventListener("keydown",(e)=>{
@@ -2532,8 +2680,8 @@ const balls = [];
         addChat("[싱글] 탈출문이 열린다!");
         beep(740,0.06,'sine',0.25);
       }else{
-        addChat("✅ 탈출 성공(테스트)!");
-        endGame("토끼 승리!");
+        addChat("✅ 탈출 성공!");
+        endGame("축하합니다!", { clear:true });
       }
       return;
     }
@@ -2999,6 +3147,13 @@ function pushOutWalls(px,pz,rad){
         }
       }
 
+      if(rabbitFollowMode && !ru.hasKey && !ru.trapped && !player.userData.trapped){
+        ru.mode = 'follow';
+        ru.followUntil = nowMs + 2500;
+      }else if(!rabbitFollowMode && ru.mode==='follow'){
+        ru.mode = ru.hasKey ? 'deliver' : (keyCount>=1 ? 'escort' : 'wander');
+      }
+
       let tx=ru.patrolX, tz=ru.patrolZ;
       if(ru.mode==='getKey' && keys.length){
         let bestKey=null, bd=999;
@@ -3028,14 +3183,24 @@ function pushOutWalls(px,pz,rad){
         tx = sx; tz = sz;
         if(nowMs > (ru.helpAggroUntil||0)) ru.mode = ru.hasKey ? 'deliver' : (keyCount>=1 ? 'escort' : 'wander');
       }
+      if(ru.mode==='follow'){
+        const idx = (ru.followSlot!=null) ? ru.followSlot : supportRabbits.indexOf(r);
+        const slots = Math.max(1, supportRabbits.length);
+        const row = Math.floor(idx/2);
+        const side = (idx%2===0) ? -1 : 1;
+        const lateral = (0.9 + row*0.2) * side * (1.6 + slots*0.15);
+        const behind = 2.8 + row*1.7;
+        const yaw = player.rotation.y || 0;
+        const sinY = Math.sin(yaw), cosY = Math.cos(yaw);
+        tx = player.position.x - sinY*behind + cosY*lateral;
+        tz = player.position.z - cosY*behind - sinY*lateral;
+      }
       if(ru.mode==='escort'){
-        const escortAng = (supportRabbits.indexOf(r)/Math.max(1,supportRabbits.length))*Math.PI*2 + nowMs*0.00055;
-        tx = player.position.x + Math.sin(escortAng)*2.4;
-        tz = player.position.z + Math.cos(escortAng)*2.4;
+        const idx = supportRabbits.indexOf(r);
+        const escortAng = (idx/Math.max(1,supportRabbits.length))*Math.PI*2 + nowMs*0.00055;
+        tx = player.position.x + Math.sin(escortAng)*(2.3 + idx*0.35);
+        tz = player.position.z + Math.cos(escortAng)*(2.3 + idx*0.35);
         if(playerChased && nearestM && nowMs > (ru.aggroCooldownUntil||0)){
-          const awayDx = r.position.x - nearestM.position.x;
-          const awayDz = r.position.z - nearestM.position.z;
-          const awayLen = Math.hypot(awayDx, awayDz) || 1;
           ru.mode = 'aggro';
           ru.helpAggroUntil = nowMs + 4200;
           ru.aggroCooldownUntil = nowMs + 60000;
@@ -3157,27 +3322,30 @@ function pushOutWalls(px,pz,rad){
       const d=Math.hypot(dx,dz);
       nearestMonsterDist = Math.min(nearestMonsterDist, d);
       const playerHasObjectiveKey = keyCount>=1;
-      const monsterSightRange = playerHasObjectiveKey ? 20 : 15.5;
-      const monsterSightFov = playerHasObjectiveKey ? 140 : 122;
+      const forceGlobalPlayerChase = !rabbitGhost && !rabbitTrapped && (hardMode || playerHasObjectiveKey);
+      const monsterSightRange = forceGlobalPlayerChase ? 9999 : 15.5;
+      const monsterSightFov = forceGlobalPlayerChase ? 360 : 122;
       if((mu.nextSenseAt||0) <= nowMs){
         let chaseTargetNow = {type:'player', obj:player, x:player.position.x, z:player.position.z, dist:d};
-        for(const r of supportRabbits){
-          const ru = r.userData||{};
-          if(ru.trapped) continue;
-          const rd = Math.hypot(r.position.x-m.position.x, r.position.z-m.position.z);
-          const priority = (nowMs < (ru.helpAggroUntil||0)) ? 8 : ((playerHasObjectiveKey && rd < 11.5) ? 3 : 0);
-          if((priority>0 || rd < chaseTargetNow.dist-0.2) && canSeeTarget(m, r.position.x, r.position.z, 18, 102)){
-            chaseTargetNow = {type:'rabbit', obj:r, x:r.position.x, z:r.position.z, dist:rd, priority:priority};
+        if(!forceGlobalPlayerChase){
+          for(const r of supportRabbits){
+            const ru = r.userData||{};
+            if(ru.trapped) continue;
+            const rd = Math.hypot(r.position.x-m.position.x, r.position.z-m.position.z);
+            const priority = (nowMs < (ru.helpAggroUntil||0)) ? 8 : ((playerHasObjectiveKey && rd < 11.5) ? 3 : 0);
+            if((priority>0 || rd < chaseTargetNow.dist-0.2) && canSeeTarget(m, r.position.x, r.position.z, 18, 102)){
+              chaseTargetNow = {type:'rabbit', obj:r, x:r.position.x, z:r.position.z, dist:rd, priority:priority};
+            }
           }
         }
-        const seesTargetNow = (chaseTargetNow.type==='player') ? (!rabbitGhost && !rabbitTrapped && canSeeTarget(m, chaseTargetNow.x, chaseTargetNow.z, monsterSightRange, monsterSightFov)) : canSeeTarget(m, chaseTargetNow.x, chaseTargetNow.z, 16.5, 138);
-        mu.sense = { chaseTarget: chaseTargetNow, seesTarget: seesTargetNow, playerDist: d, playerHasObjectiveKey: playerHasObjectiveKey };
+        const seesTargetNow = forceGlobalPlayerChase ? true : ((chaseTargetNow.type==='player') ? (!rabbitGhost && !rabbitTrapped && canSeeTarget(m, chaseTargetNow.x, chaseTargetNow.z, monsterSightRange, monsterSightFov)) : canSeeTarget(m, chaseTargetNow.x, chaseTargetNow.z, 16.5, 138));
+        mu.sense = { chaseTarget: chaseTargetNow, seesTarget: seesTargetNow, playerDist: d, playerHasObjectiveKey: playerHasObjectiveKey, forceGlobalPlayerChase: forceGlobalPlayerChase };
         mu.nextSenseAt = nowMs + ((mu.chase || playerHasObjectiveKey) ? (LOW_SPEC_MODE ? 95 : 65) : (LOW_SPEC_MODE ? 150 : 110));
       }
       const msense = mu.sense || {};
       const chaseTarget = msense.chaseTarget || {type:'player', obj:player, x:player.position.x, z:player.position.z, dist:d};
       const seesTarget = !!msense.seesTarget;
-      if(playerHasObjectiveKey && !rabbitGhost && !rabbitTrapped && canSeeTarget(m, player.position.x, player.position.z, 19.5, 138)){
+      if(forceGlobalPlayerChase){
         mu.chase = true; mu.lostSightT = 0; mu.targetType = 'player'; mu.targetRef = player;
       }
       if(mu.chase){
@@ -3185,11 +3353,13 @@ function pushOutWalls(px,pz,rad){
         const tx0 = targetObj ? targetObj.position.x : chaseTarget.x;
         const tz0 = targetObj ? targetObj.position.z : chaseTarget.z;
         const td = Math.hypot(tx0-m.position.x, tz0-m.position.z);
-        if(((mu.targetType==='player' && !rabbitGhost && !rabbitTrapped) || mu.targetType==='rabbit') && canSeeTarget(m, tx0, tz0, mu.targetType==='player' ? monsterSightRange : 16.5, mu.targetType==='player' ? monsterSightFov : 138)) mu.lostSightT = 0;
+        if(forceGlobalPlayerChase){
+          mu.lostSightT = 0;
+        }else if(((mu.targetType==='player' && !rabbitGhost && !rabbitTrapped) || mu.targetType==='rabbit') && canSeeTarget(m, tx0, tz0, mu.targetType==='player' ? monsterSightRange : 16.5, mu.targetType==='player' ? monsterSightFov : 138)) mu.lostSightT = 0;
         else mu.lostSightT = (mu.lostSightT||0) + dt;
-        if(td>30 || (mu.lostSightT||0)>2.0){ mu.chase=false; mu.targetType=''; mu.targetRef=null; activeChasers=Math.max(0,activeChasers-1); }
-      } else if(seesTarget && activeChasers<2){
-        mu.chase = true; mu.lostSightT = 0; mu.targetType = chaseTarget.type; mu.targetRef = chaseTarget.obj; activeChasers++;
+        if(!forceGlobalPlayerChase && (td>30 || (mu.lostSightT||0)>2.0)){ mu.chase=false; mu.targetType=''; mu.targetRef=null; activeChasers=Math.max(0,activeChasers-1); }
+      } else if(seesTarget && (forceGlobalPlayerChase || activeChasers<2)){
+        mu.chase = true; mu.lostSightT = 0; mu.targetType = chaseTarget.type; mu.targetRef = chaseTarget.obj; if(!forceGlobalPlayerChase) activeChasers++;
       }
       let tx=mu.patrolX, tz=mu.patrolZ;
       if(mu.chase){
@@ -3203,6 +3373,26 @@ function pushOutWalls(px,pz,rad){
           mu.patrolX=pt.x; mu.patrolZ=pt.z; mu.patrolT = 2.5 + Math.random()*3.5;
         } else mu.patrolT -= dt;
         tx=mu.patrolX; tz=mu.patrolZ;
+      }
+      if(mu.chase && hardMode){
+        let sepX = 0, sepZ = 0, nearCount = 0;
+        for(const other of monsters){
+          if(other===m || !other || !other.position) continue;
+          const odx = m.position.x - other.position.x;
+          const odz = m.position.z - other.position.z;
+          const od = Math.hypot(odx, odz) || 0.0001;
+          const desired = 2.8;
+          if(od < desired){
+            const push = (desired - od) / desired;
+            sepX += (odx / od) * push * 2.6;
+            sepZ += (odz / od) * push * 2.6;
+            nearCount++;
+          }
+        }
+        if(nearCount>0){
+          tx += sepX / nearCount;
+          tz += sepZ / nearCount;
+        }
       }
       if(mu.stunT>0) continue;
       const mdx=tx-m.position.x, mdz=tz-m.position.z, md=Math.hypot(mdx,mdz);
@@ -3268,7 +3458,7 @@ function pushOutWalls(px,pz,rad){
         updateCaughtCloud();
         addChat("⚠️ 괴물에게 잡힘! ("+rabbitCaughtCount+"/2)");
         for(const r of supportRabbits){ try{ supportRabbitSay(r, pickLine(rabbitBark.rescue)); }catch(e){} }
-        if(keyCount>=1){ keyCount=0; $("pKey").textContent="🔑 "+keyCount; updateKeyIndicator(); placeKey(); addChat('[싱글] 열쇠가 맵 어딘가로 다시 이동했다!'); }
+        if(keyCount>=1){ keyCount=0; $("pKey").textContent="🔑 "+keyCount; updateKeyIndicator(); for(const m of monsters){ if(m.userData){ m.userData.lostSightT = 9; m.userData.chase = false; m.userData.targetType=''; m.userData.targetRef=null; m.userData.patrolT = 0; } } placeKey(); addChat('[싱글] 열쇠가 맵 어딘가로 다시 이동했다!'); }
         if(rabbitCaughtCount>=2){
           player.userData.trapped = true;
           cage.userData.locked = true; cage.userData.doorOpen = 0; cage.userData.autoCloseT = 0; cageCdSprite.visible = false;
@@ -3627,6 +3817,12 @@ if(monsterReleaseLeft>0){
 (function boot(){
   const overlay = $("startOverlay");
   const startBtn = $("startStartBtn");
+  const titleBanner = $("gameTitleBanner");
+  updateHardModeUi();
+  if(titleBanner){
+    titleBanner.addEventListener('click', toggleHardMode);
+    titleBanner.addEventListener('touchstart', (e)=>{ e.preventDefault(); toggleHardMode(); }, {passive:false});
+  }
   function reallyBoot(){
     try{ resumeAudio(); if(!bgmEnabled) setBgmEnabled(true); setTimeout(()=>{ try{ resumeAudio(); setBgmEnabled(true); }catch(e){} }, 120); }catch(e){}
     const deadline=Date.now()+2500;
